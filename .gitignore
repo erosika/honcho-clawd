@@ -41,6 +41,9 @@ coverage/
 # TypeScript cache
 *.tsbuildinfo
 
+# Claude Code project instructions (user-specific)
+CLAUDE.md
+
 # Runtime data (user-specific, created at ~/.honcho-claudis/)
 # Note: The actual config/cache lives in ~/.honcho-claudis/, not in the repo
 
