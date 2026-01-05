@@ -12,6 +12,7 @@ import {
   setCachedClaudisContext,
   loadClaudisLocalContext,
 } from "../cache.js";
+import { Spinner } from "../spinner.js";
 
 interface HookInput {
   session_id?: string;
@@ -70,6 +71,10 @@ export async function handleSessionStart(): Promise<void> {
 
   const cwd = hookInput.cwd || process.cwd();
 
+  // Start loading animation
+  const spinner = new Spinner({ style: "wave" });
+  spinner.start("honcho-claudis loading memory");
+
   try {
     const client = new Honcho({
       apiKey: config.apiKey,
@@ -77,6 +82,7 @@ export async function handleSessionStart(): Promise<void> {
     });
 
     // Step 1: Get or create workspace (use cache if available)
+    spinner.update("Connecting to workspace");
     let workspaceId = getCachedWorkspaceId(config.workspace);
     if (!workspaceId) {
       const workspace = await client.workspaces.getOrCreate({ id: config.workspace });
@@ -85,6 +91,7 @@ export async function handleSessionStart(): Promise<void> {
     }
 
     // Step 2: Get or create session (use cache if available)
+    spinner.update("Loading session");
     const sessionName = getSessionName(cwd);
     let sessionId = getCachedSessionId(cwd);
     if (!sessionId) {
@@ -137,6 +144,7 @@ export async function handleSessionStart(): Promise<void> {
     }
 
     // Step 5: PARALLEL fetch all context (the big optimization!)
+    spinner.update("Fetching memory context");
     const contextParts: string[] = [];
 
     // Header
@@ -231,11 +239,15 @@ export async function handleSessionStart(): Promise<void> {
       contextParts.push(`## AI Self-Reflection (What ${config.claudePeer} Has Been Doing)\n${claudisChatResult.value.content}`);
     }
 
+    // Stop spinner and output context
+    spinner.stop("memory loaded");
+
     // Output all context
     console.log(`[${config.claudePeer}/Honcho Memory Loaded]\n\n${contextParts.join("\n\n")}`);
     process.exit(0);
   } catch (error) {
-    console.error(`[honcho-claudis] Warning: ${error}`);
+    spinner.fail("memory load failed");
+    console.error(`[honcho-claudis] ${error}`);
     process.exit(1);
   }
 }
