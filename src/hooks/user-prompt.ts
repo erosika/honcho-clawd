@@ -9,6 +9,9 @@ import {
   isContextCacheStale,
   setCachedEriContext,
   queueMessage,
+  incrementMessageCount,
+  shouldRefreshKnowledgeGraph,
+  markKnowledgeGraphRefreshed,
 } from "../cache.js";
 
 interface HookInput {
@@ -67,20 +70,27 @@ export async function handleUserPrompt(): Promise<void> {
     queueMessage(prompt, config.peerName, cwd);
   }
 
-  // Fire-and-forget: Upload to Honcho in background
-  // This doesn't block the user
+  // Fire-and-forget: Upload to Honcho immediately for real-time processing
+  // Honcho needs messages ASAP to process/compact before next session
+  // Order in Honcho doesn't matter for knowledge extraction - it's the content that matters
   if (config.saveMessages !== false) {
     uploadMessageAsync(config, cwd, prompt).catch(() => {});
   }
+
+  // Track message count for threshold-based knowledge graph refresh
+  const messageCount = incrementMessageCount();
 
   // For trivial prompts, skip heavy context retrieval
   if (shouldSkipContextRetrieval(prompt)) {
     process.exit(0);
   }
 
-  // Check if we have fresh cached context
+  // Determine if we should refresh: either cache is stale OR message threshold reached
+  const forceRefresh = shouldRefreshKnowledgeGraph();
   const cachedContext = getCachedEriContext();
-  if (cachedContext && !isContextCacheStale()) {
+  const cacheIsStale = isContextCacheStale();
+
+  if (cachedContext && !cacheIsStale && !forceRefresh) {
     // Use cached context - instant response
     const contextParts = formatCachedContext(cachedContext, config.peerName);
     if (contextParts.length > 0) {
@@ -89,11 +99,17 @@ export async function handleUserPrompt(): Promise<void> {
     process.exit(0);
   }
 
-  // Fetch fresh context (only for non-trivial prompts with stale cache)
+  // Fetch fresh context when:
+  // 1. Cache is stale (>60s old), OR
+  // 2. Message threshold reached (every 10 messages)
   try {
     const contextParts = await fetchFreshContext(config, cwd, prompt);
     if (contextParts.length > 0) {
       outputContext(config.peerName, contextParts);
+    }
+    // Mark that we refreshed the knowledge graph
+    if (forceRefresh) {
+      markKnowledgeGraphRefreshed();
     }
   } catch {
     // Context fetch failed, continue without
@@ -103,34 +119,27 @@ export async function handleUserPrompt(): Promise<void> {
 }
 
 async function uploadMessageAsync(config: any, cwd: string, prompt: string): Promise<void> {
-  const workspaceId = getCachedWorkspaceId(config.workspace);
-  const sessionId = getCachedSessionId(cwd);
-
-  if (!workspaceId || !sessionId) {
-    // No cache, need to do full setup - but do it in background
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
-
-    const workspace = await client.workspaces.getOrCreate({ id: config.workspace });
-    const sessionName = getSessionName(cwd);
-    const session = await client.workspaces.sessions.getOrCreate(workspace.id, {
-      id: sessionName,
-      metadata: { cwd },
-    });
-
-    await client.workspaces.sessions.messages.create(workspace.id, session.id, {
-      messages: [{ content: prompt, peer_id: config.peerName }],
-    });
-    return;
-  }
-
-  // Use cached IDs - fast path
   const client = new Honcho({
     apiKey: config.apiKey,
     environment: "production",
   });
+
+  // Try to use cached IDs for speed
+  let workspaceId = getCachedWorkspaceId(config.workspace);
+  let sessionId = getCachedSessionId(cwd);
+
+  if (!workspaceId || !sessionId) {
+    // No cache - need full setup
+    const workspace = await client.workspaces.getOrCreate({ id: config.workspace });
+    workspaceId = workspace.id;
+
+    const sessionName = getSessionName(cwd);
+    const session = await client.workspaces.sessions.getOrCreate(workspaceId, {
+      id: sessionName,
+      metadata: { cwd },
+    });
+    sessionId = session.id;
+  }
 
   await client.workspaces.sessions.messages.create(workspaceId, sessionId, {
     messages: [{ content: prompt, peer_id: config.peerName }],
@@ -191,50 +200,38 @@ async function fetchFreshContext(config: any, cwd: string, prompt: string): Prom
 
   const contextParts: string[] = [];
 
-  // Parallel fetch: semantic search + dialectic
-  const [contextResult, chatResult] = await Promise.allSettled([
-    client.workspaces.peers.getContext(workspaceId, userPeerId, {
-      search_query: prompt.slice(0, 500),
-      search_top_k: 10,
-      search_max_distance: 0.7,
-      max_observations: 15,
-      include_most_derived: true,
-    }),
-    client.workspaces.peers.chat(workspaceId, userPeerId, {
-      query: `Based on what you know about ${config.peerName}, what context is relevant to this query: "${prompt.slice(0, 200)}"? Answer in 1-2 sentences.`,
-      session_id: sessionId,
-    }),
-  ]);
+  // Only use getContext() here - it's free/cheap and returns pre-computed knowledge
+  // Skip chat() ($0.03 per call) - only use at session-start
+  const contextResult = await client.workspaces.peers.getContext(workspaceId, userPeerId, {
+    search_query: prompt.slice(0, 500),
+    search_top_k: 10,
+    search_max_distance: 0.7,
+    max_observations: 15,
+    include_most_derived: true,
+  });
 
-  // Process semantic search results
-  if (contextResult.status === "fulfilled" && contextResult.value) {
-    const context = contextResult.value;
-    setCachedEriContext(context); // Update cache
+  if (contextResult) {
+    setCachedEriContext(contextResult); // Update cache
 
-    if (context.representation?.explicit?.length) {
-      const explicit = context.representation.explicit
+    if (contextResult.representation?.explicit?.length) {
+      const explicit = contextResult.representation.explicit
         .slice(0, 5)
         .map((e: any) => e.content || e)
         .join("; ");
       contextParts.push(`Relevant facts: ${explicit}`);
     }
 
-    if (context.representation?.deductive?.length) {
-      const deductive = context.representation.deductive
+    if (contextResult.representation?.deductive?.length) {
+      const deductive = contextResult.representation.deductive
         .slice(0, 3)
         .map((d: any) => d.conclusion)
         .join("; ");
       contextParts.push(`Insights: ${deductive}`);
     }
 
-    if (context.peer_card?.length) {
-      contextParts.push(`Profile: ${context.peer_card.join("; ")}`);
+    if (contextResult.peer_card?.length) {
+      contextParts.push(`Profile: ${contextResult.peer_card.join("; ")}`);
     }
-  }
-
-  // Process dialectic response
-  if (chatResult.status === "fulfilled" && chatResult.value?.content) {
-    contextParts.push(`Context: ${chatResult.value.content}`);
   }
 
   return contextParts;

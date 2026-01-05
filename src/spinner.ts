@@ -1,8 +1,10 @@
 /**
  * CLI loading animation for honcho-claudis
  * Minimal, wavy style - no emojis
- * Outputs to stderr so it doesn't interfere with hook output
+ * Writes directly to /dev/tty to bypass Claude Code's output capture
  */
+
+import * as fs from "fs";
 
 // Wavy/flow animation frames
 const WAVE_FRAMES = [
@@ -60,6 +62,7 @@ export class Spinner {
   private text: string;
   private frames: string[];
   private startTime: number = 0;
+  private ttyFd: number | null = null;
 
   constructor(options: SpinnerOptions = {}) {
     this.text = options.text || "Loading";
@@ -78,6 +81,25 @@ export class Spinner {
       default:
         this.frames = DOTS_FRAMES;
     }
+
+    // Try to open /dev/tty for direct terminal access
+    try {
+      this.ttyFd = fs.openSync("/dev/tty", "w");
+    } catch {
+      this.ttyFd = null;
+    }
+  }
+
+  private write(text: string): void {
+    if (this.ttyFd !== null) {
+      try {
+        fs.writeSync(this.ttyFd, text);
+        return;
+      } catch {
+        // Fall through to stderr
+      }
+    }
+    process.stderr.write(text);
   }
 
   start(text?: string): void {
@@ -99,7 +121,7 @@ export class Spinner {
 
   private render(): void {
     const frame = this.frames[this.frameIndex];
-    process.stderr.write(`\r  ${frame} ${this.text}`);
+    this.write(`\r  ${frame} ${this.text}`);
   }
 
   update(text: string): void {
@@ -113,11 +135,13 @@ export class Spinner {
     }
 
     // Clear the line
-    process.stderr.write("\r" + " ".repeat(60) + "\r");
+    this.write("\r" + " ".repeat(60) + "\r");
 
     if (finalText) {
-      process.stderr.write(`  [ok] ${finalText}\n`);
+      this.write(`  [ok] ${finalText}\n`);
     }
+
+    this.closeTty();
   }
 
   fail(errorText?: string): void {
@@ -126,10 +150,23 @@ export class Spinner {
       this.interval = null;
     }
 
-    process.stderr.write("\r" + " ".repeat(60) + "\r");
+    this.write("\r" + " ".repeat(60) + "\r");
 
     if (errorText) {
-      process.stderr.write(`  [error] ${errorText}\n`);
+      this.write(`  [error] ${errorText}\n`);
+    }
+
+    this.closeTty();
+  }
+
+  private closeTty(): void {
+    if (this.ttyFd !== null) {
+      try {
+        fs.closeSync(this.ttyFd);
+      } catch {
+        // Ignore close errors
+      }
+      this.ttyFd = null;
     }
   }
 }
@@ -138,5 +175,11 @@ export class Spinner {
  * Simple status message
  */
 export function showStatus(message: string): void {
-  process.stderr.write(`  ${message}\n`);
+  try {
+    const fd = fs.openSync("/dev/tty", "w");
+    fs.writeSync(fd, `  ${message}\n`);
+    fs.closeSync(fd);
+  } catch {
+    process.stderr.write(`  ${message}\n`);
+  }
 }

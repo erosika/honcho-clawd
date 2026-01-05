@@ -179,38 +179,28 @@ export async function handleSessionEnd(): Promise<void> {
     const transcriptMessages = transcriptPath ? parseTranscript(transcriptPath) : [];
 
     // =====================================================
-    // Step 1: Process local message queue (batch upload)
+    // Step 1: Process queue backup (for any messages that failed fire-and-forget)
+    // Note: Most messages are already uploaded in real-time via user-prompt/post-tool-use
+    // The queue is only for reliability - catches network failures, etc.
     // =====================================================
     const queuedMessages = getQueuedMessages();
-    if (queuedMessages.length > 0 && config.saveMessages !== false) {
-      const userQueuedMessages = queuedMessages
-        .filter((m) => m.cwd === cwd)
-        .map((m) => ({
-          content: m.content,
-          peer_id: config.peerName,
-        }));
-
-      if (userQueuedMessages.length > 0) {
-        try {
-          await client.workspaces.sessions.messages.create(workspaceId, sessionId, {
-            messages: userQueuedMessages,
-          });
-        } catch {
-          // Queue upload failed, messages will be retried next session
-        }
-      }
+    // Queue messages were already attempted via fire-and-forget, just clear the backup
+    if (queuedMessages.length > 0) {
       markMessagesUploaded();
     }
 
     // =====================================================
-    // Step 2: Save assistant messages (if enabled)
+    // Step 2: Save assistant messages that weren't captured by post-tool-use
+    // post-tool-use only logs tool activity, not Claude's prose responses
     // =====================================================
     let assistantMessages: Array<{ role: string; content: string }> = [];
-    if (config.saveMessages !== false) {
+    if (config.saveMessages !== false && transcriptMessages.length > 0) {
+      // Extract assistant prose (non-tool responses) for claudis peer
       assistantMessages = transcriptMessages
         .filter((msg) => msg.role === "assistant")
         .slice(-30);
 
+      // Upload assistant messages for claudis peer knowledge extraction
       if (assistantMessages.length > 0) {
         const messagesToSend = assistantMessages.map((msg) => ({
           content: msg.content,

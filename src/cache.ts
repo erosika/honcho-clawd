@@ -1,6 +1,7 @@
 import { homedir } from "os";
 import { join } from "path";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from "fs";
+import { getContextRefreshConfig } from "./config.js";
 
 const CACHE_DIR = join(homedir(), ".honcho-claudis");
 const ID_CACHE_FILE = join(CACHE_DIR, "cache.json");
@@ -88,9 +89,20 @@ interface ContextCache {
   eriContext?: { data: any; fetchedAt: number };
   claudisContext?: { data: any; fetchedAt: number };
   summaries?: { data: any; fetchedAt: number };
+  messageCount?: number; // Track messages since last refresh
+  lastRefreshMessageCount?: number; // Message count at last knowledge graph refresh
 }
 
-const CONTEXT_TTL = 60000; // 60 seconds
+// These are now configurable via config.json, with defaults in getContextRefreshConfig()
+function getContextTTL(): number {
+  const config = getContextRefreshConfig();
+  return (config.ttlSeconds ?? 300) * 1000; // Convert to ms
+}
+
+function getMessageRefreshThreshold(): number {
+  const config = getContextRefreshConfig();
+  return config.messageThreshold ?? 50;
+}
 
 export function loadContextCache(): ContextCache {
   ensureCacheDir();
@@ -111,7 +123,7 @@ export function saveContextCache(cache: ContextCache): void {
 
 export function getCachedEriContext(): any | null {
   const cache = loadContextCache();
-  if (cache.eriContext && Date.now() - cache.eriContext.fetchedAt < CONTEXT_TTL) {
+  if (cache.eriContext && Date.now() - cache.eriContext.fetchedAt < getContextTTL()) {
     return cache.eriContext.data;
   }
   return null;
@@ -125,7 +137,7 @@ export function setCachedEriContext(data: any): void {
 
 export function getCachedClaudisContext(): any | null {
   const cache = loadContextCache();
-  if (cache.claudisContext && Date.now() - cache.claudisContext.fetchedAt < CONTEXT_TTL) {
+  if (cache.claudisContext && Date.now() - cache.claudisContext.fetchedAt < getContextTTL()) {
     return cache.claudisContext.data;
   }
   return null;
@@ -140,7 +152,37 @@ export function setCachedClaudisContext(data: any): void {
 export function isContextCacheStale(): boolean {
   const cache = loadContextCache();
   if (!cache.eriContext) return true;
-  return Date.now() - cache.eriContext.fetchedAt >= CONTEXT_TTL;
+  return Date.now() - cache.eriContext.fetchedAt >= getContextTTL();
+}
+
+// Track message count for threshold-based refresh
+export function incrementMessageCount(): number {
+  const cache = loadContextCache();
+  cache.messageCount = (cache.messageCount || 0) + 1;
+  saveContextCache(cache);
+  return cache.messageCount;
+}
+
+export function shouldRefreshKnowledgeGraph(): boolean {
+  const cache = loadContextCache();
+  const currentCount = cache.messageCount || 0;
+  const lastRefresh = cache.lastRefreshMessageCount || 0;
+
+  // Refresh if we've sent threshold messages since last refresh
+  return (currentCount - lastRefresh) >= getMessageRefreshThreshold();
+}
+
+export function markKnowledgeGraphRefreshed(): void {
+  const cache = loadContextCache();
+  cache.lastRefreshMessageCount = cache.messageCount || 0;
+  saveContextCache(cache);
+}
+
+export function resetMessageCount(): void {
+  const cache = loadContextCache();
+  cache.messageCount = 0;
+  cache.lastRefreshMessageCount = 0;
+  saveContextCache(cache);
 }
 
 // ============================================

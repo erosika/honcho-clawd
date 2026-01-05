@@ -13,7 +13,7 @@ import {
   type EriHonchoConfig,
 } from "./config.js";
 import Honcho from "@honcho-ai/core";
-import { installHooks, uninstallHooks, checkHooksInstalled } from "./install.js";
+import { installHooks, uninstallHooks, checkHooksInstalled, verifyCommandAvailable, checkLegacyBinaries } from "./install.js";
 import { handleSessionStart } from "./hooks/session-start.js";
 import { handleSessionEnd } from "./hooks/session-end.js";
 import { handlePostToolUse } from "./hooks/post-tool-use.js";

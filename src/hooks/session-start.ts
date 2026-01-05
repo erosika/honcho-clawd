@@ -11,6 +11,7 @@ import {
   setCachedEriContext,
   setCachedClaudisContext,
   loadClaudisLocalContext,
+  resetMessageCount,
 } from "../cache.js";
 import { Spinner } from "../spinner.js";
 
@@ -70,6 +71,9 @@ export async function handleSessionStart(): Promise<void> {
   }
 
   const cwd = hookInput.cwd || process.cwd();
+
+  // Reset message count for this session (for threshold-based knowledge graph refresh)
+  resetMessageCount();
 
   // Start loading animation
   const spinner = new Spinner({ style: "wave" });

@@ -10,17 +10,55 @@ interface ClaudeSettings {
 const CLI_COMMAND = "honcho-claudis";
 const EXPECTED_VERSION_PREFIX = "honcho-claudis v";
 
+// Legacy binary names that might conflict
+const LEGACY_BINARIES = ["claudis", "eri-honcho"];
+
 interface CommandVerification {
   ok: boolean;
   error?: string;
   details?: string;
+  warnings?: string[];
+}
+
+/**
+ * Checks for legacy binaries that might conflict with user aliases
+ */
+export function checkLegacyBinaries(): { found: string[]; paths: Record<string, string> } {
+  const found: string[] = [];
+  const paths: Record<string, string> = {};
+
+  for (const binary of LEGACY_BINARIES) {
+    try {
+      const path = execSync(`which ${binary} 2>/dev/null`, { encoding: "utf-8" }).trim();
+      if (path) {
+        found.push(binary);
+        paths[binary] = path;
+      }
+    } catch {
+      // Binary not found, that's good
+    }
+  }
+
+  return { found, paths };
 }
 
 /**
  * Verifies that the CLI command is properly installed and not shadowed by an alias
  */
 export function verifyCommandAvailable(): CommandVerification {
+  const warnings: string[] = [];
+
   try {
+    // Check for legacy binaries that might conflict with user aliases
+    const legacy = checkLegacyBinaries();
+    if (legacy.found.length > 0) {
+      const legacyList = legacy.found.map(b => `  - ${b} (${legacy.paths[b]})`).join("\n");
+      warnings.push(
+        `Legacy binaries found that may conflict with shell aliases:\n${legacyList}\n` +
+        `Remove them with: rm ${legacy.found.map(b => legacy.paths[b]).join(" ")}`
+      );
+    }
+
     // First check if command exists using 'which' (works in bash/zsh)
     let commandPath: string;
     try {
@@ -30,6 +68,7 @@ export function verifyCommandAvailable(): CommandVerification {
         ok: false,
         error: `Command '${CLI_COMMAND}' not found in PATH`,
         details: `Install globally with: bun install -g . (from project directory)`,
+        warnings,
       };
     }
 
@@ -46,6 +85,7 @@ export function verifyCommandAvailable(): CommandVerification {
           ok: false,
           error: `'${CLI_COMMAND}' is shadowed by a shell alias`,
           details: `Found: ${typeOutput}\nRemove or rename the alias in your shell config (~/.zshrc or ~/.bashrc)`,
+          warnings,
         };
       }
     } catch {
@@ -61,6 +101,7 @@ export function verifyCommandAvailable(): CommandVerification {
           ok: false,
           error: `'${CLI_COMMAND}' exists but returns unexpected output`,
           details: `Expected version starting with '${EXPECTED_VERSION_PREFIX}'\nGot: '${versionOutput}'\n\nThis usually means another command or alias is shadowing ${CLI_COMMAND}.`,
+          warnings,
         };
       }
     } catch (e) {
@@ -68,15 +109,17 @@ export function verifyCommandAvailable(): CommandVerification {
         ok: false,
         error: `'${CLI_COMMAND}' command failed to execute`,
         details: `Error: ${e}\nThe command exists at ${commandPath} but couldn't run properly.`,
+        warnings,
       };
     }
 
-    return { ok: true };
+    return { ok: true, warnings };
   } catch (e) {
     return {
       ok: false,
       error: `Unexpected error verifying command`,
       details: String(e),
+      warnings,
     };
   }
 }
@@ -131,7 +174,7 @@ function getHonchoClaudisHooks(): ClaudeSettings["hooks"] {
   };
 }
 
-export function installHooks(): { success: boolean; message: string } {
+export function installHooks(): { success: boolean; message: string; warnings?: string[] } {
   // CRITICAL: Verify command is available before installing hooks
   // This prevents breaking Claude Code if there's an alias conflict
   const verification = verifyCommandAvailable();
@@ -139,6 +182,7 @@ export function installHooks(): { success: boolean; message: string } {
     return {
       success: false,
       message: `${verification.error}\n\n${verification.details || ""}\n\n⚠️  Hooks NOT installed to prevent breaking Claude Code.`,
+      warnings: verification.warnings,
     };
   }
 
@@ -190,6 +234,7 @@ export function installHooks(): { success: boolean; message: string } {
   return {
     success: true,
     message: `Hooks installed to ${settingsPath}`,
+    warnings: verification.warnings,
   };
 }
 
