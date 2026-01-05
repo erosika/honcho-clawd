@@ -99,14 +99,11 @@ export async function handlePostToolUse(): Promise<void> {
   const summary = formatToolSummary(toolName, toolInput, toolResponse);
 
   // INSTANT: Update local clawd context file (~2ms)
-  // This gives clawd self-awareness even without Honcho
   appendClawdWork(summary);
 
-  // Fire-and-forget: Log to Honcho in background
-  // Don't block on this - just let it happen
-  logToHonchoAsync(config, cwd, summary).catch(() => {});
+  // Upload to Honcho and wait for completion
+  await logToHonchoAsync(config, cwd, summary).catch(() => {});
 
-  // Return immediately - don't wait for Honcho
   process.exit(0);
 }
 

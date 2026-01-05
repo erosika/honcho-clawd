@@ -71,18 +71,18 @@ export async function handleUserPrompt(): Promise<void> {
     queueMessage(prompt, config.peerName, cwd);
   }
 
-  // Fire-and-forget: Upload to Honcho immediately for real-time processing
-  // Honcho needs messages ASAP to process/compact before next session
-  // Order in Honcho doesn't matter for knowledge extraction - it's the content that matters
+  // Start upload immediately (we'll await before exit)
+  let uploadPromise: Promise<void> | null = null;
   if (config.saveMessages !== false) {
-    uploadMessageAsync(config, cwd, prompt).catch(() => {});
+    uploadPromise = uploadMessageAsync(config, cwd, prompt);
   }
 
   // Track message count for threshold-based knowledge graph refresh
   const messageCount = incrementMessageCount();
 
-  // For trivial prompts, skip heavy context retrieval
+  // For trivial prompts, skip heavy context retrieval but still upload
   if (shouldSkipContextRetrieval(prompt)) {
+    if (uploadPromise) await uploadPromise.catch(() => {});
     process.exit(0);
   }
 
@@ -97,6 +97,7 @@ export async function handleUserPrompt(): Promise<void> {
     if (contextParts.length > 0) {
       outputContext(config.peerName, contextParts);
     }
+    if (uploadPromise) await uploadPromise.catch(() => {});
     process.exit(0);
   }
 
@@ -116,6 +117,8 @@ export async function handleUserPrompt(): Promise<void> {
     // Context fetch failed, continue without
   }
 
+  // Ensure upload completes before exit
+  if (uploadPromise) await uploadPromise.catch(() => {});
   process.exit(0);
 }
 
