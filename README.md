@@ -13,7 +13,7 @@ Give Claude Code long-term memory that survives context wipes, session restarts,
 - **Persistent Memory**: User messages and AI responses are saved to Honcho, building long-term context
 - **Survives Interruptions**: Local message queue ensures no data loss on `ctrl+c` or crashes
 - **AI Self-Awareness**: Claude knows what it was working on, even after context is wiped
-- **Dual Peer System**: Separate memory for user (you) and AI (claudis)
+- **Dual Peer System**: Separate memory for user (you) and AI (clawd)
 - **Semantic Search**: Relevant context is retrieved based on your current prompt
 - **Cost-Optimized**: Configurable refresh rates and caching to minimize API costs
 - **Ultra-Fast Hooks**: 98% latency reduction through caching, parallelization, and fire-and-forget patterns
@@ -53,8 +53,8 @@ Give Claude Code long-term memory that survives context wipes, session restarts,
 
 ```bash
 # Clone the repository
-git clone https://github.com/erosika/honcho-claudis.git
-cd honcho-claudis
+git clone https://github.com/erosika/honcho-clawd.git
+cd honcho-clawd
 
 # Install dependencies
 bun install
@@ -69,7 +69,7 @@ bun link
 ### Install from npm (coming soon)
 
 ```bash
-bun install -g honcho-claudis
+bun install -g honcho-clawd
 ```
 
 ---
@@ -79,20 +79,20 @@ bun install -g honcho-claudis
 ### 1. Initialize Configuration
 
 ```bash
-honcho-claudis init
+honcho-clawd init
 ```
 
 You'll be prompted for:
 - **Your name/peer ID**: How Honcho identifies you (e.g., "yourname")
 - **Workspace name**: Your Honcho workspace (e.g., "myworkspace")
-- **Claude's peer name**: AI identity in Honcho (default: "claudis")
+- **Claude's peer name**: AI identity in Honcho (default: "clawd")
 - **Enable message saving**: Whether to save conversation history
 - **Honcho API key**: Get from https://app.honcho.dev
 
 ### 2. Install Hooks
 
 ```bash
-honcho-claudis install
+honcho-clawd install
 ```
 
 This adds hooks to `~/.claude/settings.json` that activate automatically.
@@ -120,7 +120,7 @@ claude
 │  ─────────────    │  ───────────     │  ────────────  │ ──────── │
 │  Load context     │  Queue message   │  Log tool use  │ Batch    │
 │  from Honcho +    │  locally (1ms)   │  locally (2ms) │ upload   │
-│  local claudis    │  Fire-and-forget │  Fire-and-     │ messages │
+│  local clawd    │  Fire-and-forget │  Fire-and-     │ messages │
 │  summary          │  upload          │  forget upload │ Generate │
 │                   │  Cached context  │                │ summary  │
 └─────────────────────────────────────────────────────────────────┘
@@ -130,7 +130,7 @@ claude
 │                         Honcho API                               │
 │  ┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌─────────────┐ │
 │  │Workspace │  │ Session  │  │    Peers     │  │  Messages   │ │
-│  │(workspace)│──│(project) │──│ user/claudis │──│ (history)   │ │
+│  │(workspace)│──│(project) │──│ user/clawd │──│ (history)   │ │
 │  └──────────┘  └──────────┘  └──────────────┘  └─────────────┘ │
 │                                     │                           │
 │                    ┌────────────────┴────────────────┐          │
@@ -145,12 +145,12 @@ claude
 
 ### Dual Peer System
 
-honcho-claudis creates two "peers" in Honcho:
+honcho-clawd creates two "peers" in Honcho:
 
 | Peer | Represents | Observes | Purpose |
 |------|------------|----------|---------|
 | `user` (you) | The user | Self | Build knowledge about your preferences, projects, style |
-| `claudis` | Claude AI | You | Build knowledge about what Claude has done, AI self-awareness |
+| `clawd` | Claude AI | You | Build knowledge about what Claude has done, AI self-awareness |
 
 This enables Claude to understand both what **you** know/want and what **it** has been working on.
 
@@ -160,14 +160,14 @@ This enables Claude to understand both what **you** know/want and what **it** ha
 
 ### Config File
 
-Located at `~/.honcho-claudis/config.json`:
+Located at `~/.honcho-clawd/config.json`:
 
 ```json
 {
   "peerName": "yourname",
   "apiKey": "hch-v2-...",
   "workspace": "myworkspace",
-  "claudePeer": "claudis",
+  "claudePeer": "clawd",
   "saveMessages": true,
   "sessions": {
     "/path/to/project": "project-name"
@@ -192,7 +192,7 @@ Located at `~/.honcho-claudis/config.json`:
 | `peerName` | Your identity in Honcho | (required) |
 | `apiKey` | Honcho API key | (required) |
 | `workspace` | Honcho workspace name | `"collab"` |
-| `claudePeer` | AI identity in Honcho | `"claudis"` |
+| `claudePeer` | AI identity in Honcho | `"clawd"` |
 | `saveMessages` | Save conversation history | `true` |
 | `sessions` | Directory → session mappings | `{}` |
 
@@ -218,28 +218,28 @@ Control how often context is fetched from Honcho:
 
 ## Claude Code Skills
 
-honcho-claudis includes slash commands you can use directly in Claude Code:
+honcho-clawd includes slash commands you can use directly in Claude Code:
 
 ### Available Commands
 
 | Command | Description |
 |---------|-------------|
-| `/honcho-claudis-new [name]` | Create or connect to a Honcho session |
-| `/honcho-claudis-list` | List all Honcho sessions |
-| `/honcho-claudis-status` | Show current session and memory status |
-| `/honcho-claudis-switch <name>` | Switch to a different session |
-| `/honcho-claudis-clear` | Clear custom session (revert to default) |
+| `/honcho-clawd-new [name]` | Create or connect to a Honcho session |
+| `/honcho-clawd-list` | List all Honcho sessions |
+| `/honcho-clawd-status` | Show current session and memory status |
+| `/honcho-clawd-switch <name>` | Switch to a different session |
+| `/honcho-clawd-clear` | Clear custom session (revert to default) |
 
 ### Usage Example
 
 ```
-You: /honcho-claudis-status
+You: /honcho-clawd-status
 
 Claude: Current Honcho session status:
 - Workspace: myworkspace
 - Session: my-project
 - User Peer: yourname
-- AI Peer: claudis
+- AI Peer: clawd
 - Message Saving: enabled
 ```
 
@@ -257,7 +257,7 @@ Claude: Current Honcho session status:
 
 ### Default Cost-Optimized Settings
 
-honcho-claudis is configured to minimize costs by default:
+honcho-clawd is configured to minimize costs by default:
 
 1. **Dialectic calls (`chat()`) skipped in user-prompt** - Only called at session-start
 2. **5-minute context cache** - Reduces redundant `getContext()` calls
@@ -273,7 +273,7 @@ honcho-claudis is configured to minimize costs by default:
 
 ### Further Cost Reduction
 
-To reduce costs further, edit `~/.honcho-claudis/config.json`:
+To reduce costs further, edit `~/.honcho-clawd/config.json`:
 
 ```json
 {
@@ -292,12 +292,12 @@ To reduce costs further, edit `~/.honcho-claudis/config.json`:
 ### File Structure
 
 ```
-~/.honcho-claudis/
+~/.honcho-clawd/
 ├── config.json           # User settings (API key, workspace, peer names)
 ├── cache.json            # Cached Honcho IDs (workspace, session, peers)
 ├── context-cache.json    # Pre-warmed context with TTL tracking
 ├── message-queue.jsonl   # Local message queue (reliability layer)
-└── claudis-context.md    # AI self-summary (survives context wipes)
+└── clawd-context.md    # AI self-summary (survives context wipes)
 ```
 
 ### Source Structure
@@ -348,14 +348,14 @@ Claude Code's context window can be wiped or compacted at any time. When this ha
 
 ### The Solution
 
-honcho-claudis maintains **claudis self-context** - a persistent record of Claude's work that survives context wipes.
+honcho-clawd maintains **clawd self-context** - a persistent record of Claude's work that survives context wipes.
 
 ### How It Works
 
-1. **PostToolUse**: Every significant action (file writes, edits, commands) is logged to `~/.honcho-claudis/claudis-context.md`
+1. **PostToolUse**: Every significant action (file writes, edits, commands) is logged to `~/.honcho-clawd/clawd-context.md`
 2. **SessionEnd**: A summary of Claude's work is generated and saved to Honcho
 3. **SessionStart**: Claude receives both:
-   - **Local context**: Instant read from `claudis-context.md`
+   - **Local context**: Instant read from `clawd-context.md`
    - **Honcho context**: Observations and patterns from Honcho's memory system
 
 ### Example
@@ -398,10 +398,10 @@ Session: my-project
 ## CLI Reference
 
 ```
-honcho-claudis <command>
+honcho-clawd <command>
 
 Commands:
-  init        Configure honcho-claudis (name, API key, workspace)
+  init        Configure honcho-clawd (name, API key, workspace)
   install     Install hooks to ~/.claude/settings.json
   uninstall   Remove hooks from Claude settings
   status      Show current configuration and hook status
@@ -429,29 +429,29 @@ Hook Commands (internal - called by Claude Code):
 
 1. Check hooks are installed:
    ```bash
-   honcho-claudis status
+   honcho-clawd status
    ```
 
-2. Verify `~/.claude/settings.json` contains honcho-claudis hooks
+2. Verify `~/.claude/settings.json` contains honcho-clawd hooks
 
 3. Check the hook binary is accessible:
    ```bash
-   which honcho-claudis
+   which honcho-clawd
    ```
 
 ### Slow Performance
 
 1. Clear stale caches:
    ```bash
-   rm ~/.honcho-claudis/cache.json
-   rm ~/.honcho-claudis/context-cache.json
+   rm ~/.honcho-clawd/cache.json
+   rm ~/.honcho-clawd/context-cache.json
    ```
 
 2. First request after cache clear will be slower (populating cache)
 
 ### No Context Loading
 
-1. Verify API key is valid in `~/.honcho-claudis/config.json`
+1. Verify API key is valid in `~/.honcho-clawd/config.json`
 2. Check Honcho dashboard for your workspace/session
 3. Ensure `saveMessages` is `true` in config
 
@@ -518,4 +518,4 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 - [Honcho Documentation](https://docs.honcho.dev)
 - [Claude Code Documentation](https://docs.anthropic.com/claude-code)
-- [Report Issues](https://github.com/erosika/honcho-claudis/issues)
+- [Report Issues](https://github.com/erosika/honcho-clawd/issues)
