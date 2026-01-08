@@ -13,11 +13,13 @@ Give Claude Code long-term memory that survives context wipes, session restarts,
 - **Persistent Memory**: User messages and AI responses are saved to Honcho, building long-term context
 - **Survives Interruptions**: Local message queue ensures no data loss on `ctrl+c` or crashes
 - **AI Self-Awareness**: Claude knows what it was working on, even after context is wiped
+- **Git State Tracking**: Detects branch switches, commits, and changes made outside Claude sessions
 - **Dual Peer System**: Separate memory for user (you) and AI (clawd)
 - **Semantic Search**: Relevant context is retrieved based on your current prompt
 - **Cost-Optimized**: Configurable refresh rates and caching to minimize API costs
 - **Ultra-Fast Hooks**: 98% latency reduction through caching, parallelization, and fire-and-forget patterns
 - **Per-Directory Sessions**: Each project directory maintains its own conversation history
+- **SaaS/Local Switching**: Easily switch between Honcho SaaS and local instances
 - **Claude Code Skills**: Built-in slash commands for session management
 
 ---
@@ -28,6 +30,8 @@ Give Claude Code long-term memory that survives context wipes, session restarts,
 - [Quick Start](#quick-start)
 - [How It Works](#how-it-works)
 - [Configuration](#configuration)
+- [Endpoint Switching](#endpoint-switching)
+- [Git State Tracking](#git-state-tracking)
 - [Claude Code Skills](#claude-code-skills)
 - [Cost Optimization](#cost-optimization)
 - [Architecture](#architecture)
@@ -214,6 +218,99 @@ Control how often context is fetched from Honcho:
 | `messageUpload.maxAssistantTokens` | Truncate assistant messages | `null` (no limit) |
 | `messageUpload.summarizeAssistant` | Summarize instead of full text | `false` |
 
+### Endpoint Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `endpoint.environment` | `"production"` (SaaS) or `"local"` | `"production"` |
+| `endpoint.baseUrl` | Custom URL (overrides environment) | `null` |
+
+### Local Context Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `localContext.maxEntries` | Max entries in clawd-context.md | `50` |
+
+---
+
+## Endpoint Switching
+
+Switch between Honcho SaaS and local instances for development/testing.
+
+### Commands
+
+```bash
+# Show current endpoint
+honcho-clawd endpoint
+
+# Switch to SaaS (default)
+honcho-clawd endpoint saas
+
+# Switch to local instance (localhost:8000)
+honcho-clawd endpoint local
+
+# Use custom URL
+honcho-clawd endpoint custom https://my-honcho.example.com
+
+# Test connection
+honcho-clawd endpoint test
+```
+
+### During Init
+
+Type `local` as the API key during `honcho-clawd init` to configure for a local instance:
+
+```bash
+$ honcho-clawd init
+Enter your Honcho API key: local
+Local mode enabled
+Enter local API key (or press enter for 'local'):
+```
+
+---
+
+## Git State Tracking
+
+honcho-clawd automatically tracks git state to detect external changes.
+
+### What's Tracked
+
+- **Branch**: Current branch name
+- **Commit**: HEAD SHA and message
+- **Dirty Files**: Uncommitted changes
+
+### External Change Detection
+
+At each session start, honcho-clawd compares the current git state to the cached state from the last session. Detected changes include:
+
+| Change Type | Example |
+|-------------|---------|
+| Branch switch | `Branch switched from 'main' to 'feature-x'` |
+| New commits | `New commit: abc123 - feat: add feature` |
+| Uncommitted changes | `Uncommitted changes detected: file1.ts, file2.ts` |
+
+### Context Enhancement
+
+Git state enhances the startup context:
+
+```
+## Honcho Memory System Active
+- User: yourname
+- AI: clawd
+- Workspace: myworkspace
+- Session: my-project
+- Directory: /path/to/project
+- Git Branch: feature-x
+- Git HEAD: abc123
+- Working Tree: 3 uncommitted changes
+
+## Git Activity Since Last Session
+- Branch switched from 'main' to 'feature-x'
+- New commit: abc123 - feat: add feature
+```
+
+Dialectic queries are also enhanced with git context for more relevant responses.
+
 ---
 
 ## Claude Code Skills
@@ -293,11 +390,12 @@ To reduce costs further, edit `~/.honcho-clawd/config.json`:
 
 ```
 ~/.honcho-clawd/
-├── config.json           # User settings (API key, workspace, peer names)
+├── config.json           # User settings (API key, workspace, peer names, endpoint)
 ├── cache.json            # Cached Honcho IDs (workspace, session, peers)
 ├── context-cache.json    # Pre-warmed context with TTL tracking
+├── git-state.json        # Git state per directory (for change detection)
 ├── message-queue.jsonl   # Local message queue (reliability layer)
-└── clawd-context.md    # AI self-summary (survives context wipes)
+└── clawd-context.md      # AI self-summary (survives context wipes)
 ```
 
 ### Source Structure
@@ -305,15 +403,19 @@ To reduce costs further, edit `~/.honcho-clawd/config.json`:
 ```
 src/
 ├── cli.ts              # Main CLI entry point
-├── config.ts           # Config management + helpers
-├── cache.ts            # Caching layer (IDs, context, message queue)
+├── config.ts           # Config management, endpoint switching, helpers
+├── cache.ts            # Caching layer (IDs, context, message queue, git state)
+├── git.ts              # Git state capture and change detection
 ├── install.ts          # Hook installation to Claude settings
 ├── spinner.ts          # Loading animation
+├── skills/
+│   └── handoff.ts      # Research handoff summary generation
 └── hooks/
-    ├── session-start.ts    # Load context from Honcho + local
+    ├── session-start.ts    # Load context from Honcho + local + git state
     ├── session-end.ts      # Save messages + generate summary
     ├── post-tool-use.ts    # Log tool usage + update local context
-    └── user-prompt.ts      # Queue message + retrieve context
+    ├── user-prompt.ts      # Queue message + retrieve context
+    └── pre-compact.ts      # Re-inject context before compaction
 ```
 
 ---
@@ -404,6 +506,7 @@ Commands:
   init        Configure honcho-clawd (name, API key, workspace)
   install     Install hooks to ~/.claude/settings.json
   uninstall   Remove hooks from Claude settings
+  update      Rebuild and reinstall (removes lockfile, builds, links)
   status      Show current configuration and hook status
   help        Show help message
 
@@ -414,11 +517,23 @@ Session Commands:
   session switch <name>  Switch to existing session
   session clear          Remove custom session mapping
 
+Endpoint Commands:
+  endpoint               Show current endpoint (SaaS/local)
+  endpoint saas          Switch to SaaS (api.honcho.dev)
+  endpoint local         Switch to local (localhost:8000)
+  endpoint custom <url>  Use custom URL
+  endpoint test          Test connection
+
+Skills:
+  handoff                Generate research handoff summary
+  handoff --all          Include all instances (not just current)
+
 Hook Commands (internal - called by Claude Code):
   hook session-start    Handle SessionStart event
   hook session-end      Handle SessionEnd event
   hook post-tool-use    Handle PostToolUse event
   hook user-prompt      Handle UserPromptSubmit event
+  hook pre-compact      Handle PreCompact event
 ```
 
 ---

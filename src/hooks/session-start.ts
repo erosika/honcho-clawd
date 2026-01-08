@@ -13,9 +13,15 @@ import {
   loadClawdLocalContext,
   resetMessageCount,
   setClaudeInstanceId,
+  getCachedGitState,
+  setCachedGitState,
+  detectGitChanges,
+  type GitState,
+  type GitStateChange,
 } from "../cache.js";
 import { Spinner } from "../spinner.js";
 import { displayHonchoStartup } from "../pixel.js";
+import { captureGitState, getRecentCommits, formatGitContext, isGitRepo, inferFeatureContext, formatFeatureContext } from "../git.js";
 
 const WORKSPACE_APP_TAG = "honcho-clawd";
 
@@ -84,6 +90,20 @@ export async function handleSessionStart(): Promise<void> {
   // Reset message count for this session (for threshold-based knowledge graph refresh)
   resetMessageCount();
 
+  // Capture git state (before any API calls for speed)
+  const previousGitState = getCachedGitState(cwd);
+  const currentGitState = captureGitState(cwd);
+  const gitChanges = currentGitState ? detectGitChanges(previousGitState, currentGitState) : [];
+  const recentCommits = isGitRepo(cwd) ? getRecentCommits(cwd, 5) : [];
+
+  // Infer feature context from git state
+  const featureContext = currentGitState ? inferFeatureContext(currentGitState, recentCommits) : null;
+
+  // Update git state cache
+  if (currentGitState) {
+    setCachedGitState(cwd, currentGitState);
+  }
+
   // Start loading animation with neural style
   const spinner = new Spinner({ style: "neural" });
   spinner.start("loading memory");
@@ -107,13 +127,32 @@ export async function handleSessionStart(): Promise<void> {
     spinner.update("Loading session");
     const sessionName = getSessionName(cwd);
     let sessionId = getCachedSessionId(cwd);
+
+    // Build session metadata with git info and inferred feature context
+    const sessionMetadata: Record<string, any> = { cwd };
+    if (currentGitState) {
+      sessionMetadata.git_branch = currentGitState.branch;
+      sessionMetadata.git_commit = currentGitState.commit;
+      sessionMetadata.git_dirty = currentGitState.isDirty;
+    }
+    if (featureContext) {
+      sessionMetadata.feature_type = featureContext.type;
+      sessionMetadata.feature_description = featureContext.description;
+      sessionMetadata.feature_keywords = featureContext.keywords;
+      sessionMetadata.feature_areas = featureContext.areas;
+      sessionMetadata.feature_confidence = featureContext.confidence;
+    }
+
     if (!sessionId) {
       const session = await client.workspaces.sessions.getOrCreate(workspaceId, {
         id: sessionName,
-        metadata: { cwd },
+        metadata: sessionMetadata,
       });
       sessionId = session.id;
       setCachedSessionId(cwd, sessionName, sessionId);
+    } else {
+      // Update session metadata with current git state (fire-and-forget)
+      client.workspaces.sessions.update(workspaceId, sessionId, { metadata: sessionMetadata }).catch(() => {});
     }
 
     // Step 3: Get or create peers (use cache if available)
@@ -154,17 +193,88 @@ export async function handleSessionStart(): Promise<void> {
       setSessionForPath(cwd, sessionName);
     }
 
+    // Upload git changes as observations (fire-and-forget)
+    // These capture external activity that happened OUTSIDE of Claude sessions
+    if (gitChanges.length > 0 && userPeerId) {
+      const gitObservations = gitChanges
+        .filter((c) => c.type !== "initial") // Don't log initial state as observation
+        .map((change) => ({
+          content: `[Git External] ${change.description}`,
+          metadata: {
+            type: "git_change",
+            change_type: change.type,
+            from: change.from,
+            to: change.to,
+            external: true, // Mark as external activity (not from Claude)
+          },
+        }));
+
+      if (gitObservations.length > 0) {
+        Promise.all(
+          gitObservations.map((obs) =>
+            client.workspaces.sessions.messages.create(workspaceId, sessionId, {
+              peer_id: userPeerId!,
+              is_user: true,
+              content: obs.content,
+              metadata: obs.metadata,
+            })
+          )
+        ).catch(() => {});
+      }
+    }
+
     // Step 5: PARALLEL fetch all context (the big optimization!)
     spinner.update("Fetching memory context");
     const contextParts: string[] = [];
 
-    // Header
-    contextParts.push(`## Honcho Memory System Active
+    // Header with git context
+    let headerContent = `## Honcho Memory System Active
 - User: ${config.peerName}
 - AI: ${config.claudePeer}
 - Workspace: ${config.workspace}
 - Session: ${sessionName}
-- Directory: ${cwd}`);
+- Directory: ${cwd}`;
+
+    if (currentGitState) {
+      headerContent += `\n- Git Branch: ${currentGitState.branch}`;
+      headerContent += `\n- Git HEAD: ${currentGitState.commit}`;
+      if (currentGitState.isDirty) {
+        headerContent += `\n- Working Tree: ${currentGitState.dirtyFiles.length} uncommitted changes`;
+      }
+    }
+
+    // Add inferred feature context to header
+    if (featureContext && featureContext.confidence !== "low") {
+      headerContent += `\n- Feature: ${featureContext.type} - ${featureContext.description}`;
+      if (featureContext.areas.length > 0) {
+        headerContent += `\n- Areas: ${featureContext.areas.join(", ")}`;
+      }
+    }
+
+    contextParts.push(headerContent);
+
+    // Add inferred feature context section
+    if (featureContext) {
+      const featureSection = [
+        `## Inferred Feature Context`,
+        `- Type: ${featureContext.type}`,
+        `- Description: ${featureContext.description}`,
+      ];
+      if (featureContext.keywords.length > 0) {
+        featureSection.push(`- Keywords: ${featureContext.keywords.join(", ")}`);
+      }
+      if (featureContext.areas.length > 0) {
+        featureSection.push(`- Code Areas: ${featureContext.areas.join(", ")}`);
+      }
+      featureSection.push(`- Confidence: ${featureContext.confidence}`);
+      contextParts.push(featureSection.join("\n"));
+    }
+
+    // Add git changes section if external changes detected
+    if (gitChanges.length > 0) {
+      const changeDescriptions = gitChanges.map((c) => `- ${c.description}`).join("\n");
+      contextParts.push(`## Git Activity Since Last Session\n${changeDescriptions}`);
+    }
 
     // Load local clawd context immediately (instant, no API call)
     const localClawdContext = loadClawdLocalContext();
@@ -172,10 +282,19 @@ export async function handleSessionStart(): Promise<void> {
       contextParts.push(`## CLAWD Local Context (What I Was Working On)\n${localClawdContext.slice(0, 2000)}`);
     }
 
+    // Build context-aware dialectic queries
+    const branchContext = currentGitState ? ` They are currently on git branch '${currentGitState.branch}'.` : "";
+    const changeContext = gitChanges.length > 0 && gitChanges[0].type === "branch_switch"
+      ? ` Note: they just switched branches from '${gitChanges[0].from}' to '${gitChanges[0].to}'.`
+      : "";
+    const featureHint = featureContext && featureContext.confidence !== "low"
+      ? ` Current work appears to be: ${featureContext.type} - ${featureContext.description}.`
+      : "";
+
     // Parallel API calls for rich context
     const [userContextResult, clawdContextResult, summariesResult, userChatResult, clawdChatResult] =
       await Promise.allSettled([
-        // 1. Get user's context
+        // 1. Get user's context (with metadata filtering for relevant observations)
         client.workspaces.peers.getContext(workspaceId, userPeerId!, {
           max_observations: 30,
           include_most_derived: true,
@@ -187,14 +306,14 @@ export async function handleSessionStart(): Promise<void> {
         }),
         // 3. Get session summaries
         client.workspaces.sessions.summaries(workspaceId, sessionId),
-        // 4. Dialectic: Ask about user
+        // 4. Dialectic: Ask about user (context-enhanced)
         client.workspaces.peers.chat(workspaceId, userPeerId!, {
-          query: `Summarize what you know about ${config.peerName} in 2-3 sentences. Focus on their preferences, current projects, and working style.`,
+          query: `Summarize what you know about ${config.peerName} in 2-3 sentences. Focus on their preferences, current projects, and working style.${branchContext}${changeContext}${featureHint}`,
           session_id: sessionId,
         }),
-        // 5. Dialectic: Ask about clawd (self-reflection!)
+        // 5. Dialectic: Ask about clawd (self-reflection, context-enhanced)
         client.workspaces.peers.chat(workspaceId, clawdPeerId!, {
-          query: `What has ${config.claudePeer} been working on recently? Summarize the AI assistant's recent activities and focus areas.`,
+          query: `What has ${config.claudePeer} been working on recently?${branchContext}${featureHint} Summarize the AI assistant's recent activities and focus areas relevant to the current work context.`,
           session_id: sessionId,
         }),
       ]);

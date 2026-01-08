@@ -34,10 +34,11 @@
 | File | Purpose |
 |------|---------|
 | `src/cli.ts` | Main CLI entry point, command routing |
-| `src/config.ts` | Configuration management, helpers |
-| `src/cache.ts` | All caching logic (IDs, context, message queue) |
+| `src/config.ts` | Configuration management, endpoint switching, helpers |
+| `src/cache.ts` | All caching logic (IDs, context, message queue, git state) |
+| `src/git.ts` | Git state capture and change detection |
 | `src/install.ts` | Hook installation to Claude settings |
-| `src/hooks/session-start.ts` | Load context from Honcho + local files |
+| `src/hooks/session-start.ts` | Load context from Honcho + local files + git state |
 | `src/hooks/session-end.ts` | Save messages, generate summary |
 | `src/hooks/post-tool-use.ts` | Track AI actions for self-awareness |
 | `src/hooks/user-prompt.ts` | Queue messages, retrieve context |
@@ -149,6 +150,50 @@ honcho-clawd handoff → messages.list() → local analysis (stuck patterns, top
 - `sessions.summaries()` - Get current summary
 
 **Trigger**: Claude Code's `UserPromptSubmit` hook with compact detection
+
+### Feature: Git State Tracking
+
+**What it does**: Captures git state at session start, detects external changes (branch switches, commits made outside Claude)
+
+**Implementation**:
+- `src/git.ts` - Captures branch, commit SHA, dirty files using git commands
+- `~/.honcho-clawd/git-state.json` - Caches git state per directory
+- `detectGitChanges(previous, current)` - Detects branch switches, new commits, file changes
+
+**Data flow**:
+```
+Session start → captureGitState() → compare to cached state → detect changes → upload as observations
+```
+
+**Session metadata enriched with**:
+- `git_branch` - Current branch name
+- `git_commit` - Current HEAD SHA
+- `git_dirty` - Whether working tree has uncommitted changes
+
+**Dialectic queries enhanced**: Queries include branch context (e.g., "They are on branch 'feature-x'")
+
+### Feature: Endpoint Switching (SaaS vs Local)
+
+**What it does**: Switch between Honcho SaaS and local instances
+
+**Commands**:
+- `honcho-clawd endpoint` - Show current endpoint
+- `honcho-clawd endpoint saas` - Switch to SaaS (api.honcho.dev)
+- `honcho-clawd endpoint local` - Switch to local (localhost:8000)
+- `honcho-clawd endpoint custom <url>` - Use custom URL
+- `honcho-clawd endpoint test` - Test connection
+
+**Configuration**:
+```json
+{
+  "endpoint": {
+    "environment": "production",  // or "local"
+    "baseUrl": "https://custom.honcho.dev"  // optional custom URL
+  }
+}
+```
+
+**Init shortcut**: Type `local` as API key during `honcho-clawd init` to configure for local instance
 
 ### Endpoint Cost Summary
 
@@ -298,8 +343,9 @@ Skills are Claude Code slash commands that run honcho-clawd functionality:
 
 ```
 ~/.honcho-clawd/
-├── config.json           # User settings (API key, workspace, peer names)
-│   └── Properties: peerName, apiKey, workspace, claudePeer, sessions{}, saveMessages
+├── config.json           # User settings (API key, workspace, peer names, endpoint)
+│   └── Properties: peerName, apiKey, workspace, claudePeer, sessions{}, saveMessages,
+│                   endpoint.{environment, baseUrl}, localContext.{maxEntries}
 │
 ├── cache.json            # Cached Honcho IDs (avoid redundant API calls)
 │   └── Properties: workspace.{name, id}, peers.{name: id}, sessions.{cwd: {id, name, updatedAt}}, claudeInstanceId
@@ -308,11 +354,14 @@ Skills are Claude Code slash commands that run honcho-clawd functionality:
 │   └── Properties: userContext.{data, fetchedAt}, clawdContext.{data, fetchedAt},
 │                   summaries.{data, fetchedAt}, messageCount, lastRefreshMessageCount
 │
+├── git-state.json        # Git state per directory (for change detection)
+│   └── Properties: {[cwd]: {branch, commit, commitMessage, isDirty, dirtyFiles[], timestamp}}
+│
 ├── message-queue.jsonl   # Local message queue for reliability (append-only)
 │   └── Format: {content, peerId, cwd, timestamp, uploaded, instanceId}[] (one JSON per line)
 │
 └── clawd-context.md    # AI self-summary (survives context wipes)
-    └── Format: Markdown with "## Recent Activity" section, capped at 50 entries
+    └── Format: Markdown with "## Recent Activity" section, capped at N entries (configurable)
 ```
 
 ### Remote State (Honcho API)
@@ -350,36 +399,41 @@ Workspace
 
 ### Session Start (`session-start.ts`)
 
-**Trigger**: Claude Code session begins  
-**Latency**: ~400ms  
+**Trigger**: Claude Code session begins
+**Latency**: ~400ms
 **Output**: Context injected into Claude's system prompt
 
 ```
 [1] loadConfig()                    → Read config.json
 [2] Bun.stdin.text()                → Parse JSON from Claude Code
 [3] resetMessageCount()             → Write context-cache.json (messageCount=0)
-[4] getCachedWorkspaceId()          → Read cache.json
+[4] captureGitState(cwd)            → Run git commands (branch, commit, status)
+[5] getCachedGitState(cwd)          → Read git-state.json
+[6] detectGitChanges(prev, curr)    → Compare states (branch switch? new commits?)
+[7] setCachedGitState(cwd)          → Write git-state.json
+[8] getCachedWorkspaceId()          → Read cache.json
     ├─► HIT: use cached ID
     └─► MISS: await workspaces.getOrCreate() → Write cache.json
-[5] getCachedSessionId()            → Read cache.json
-    ├─► HIT: use cached ID
-    └─► MISS: await sessions.getOrCreate() → Write cache.json
-[6] getCachedPeerId(user/clawd)   → Read cache.json
+[9] getCachedSessionId()            → Read cache.json
+    ├─► HIT: use cached ID + sessions.update(metadata) FIRE-AND-FORGET
+    └─► MISS: await sessions.getOrCreate(metadata) → Write cache.json
+[10] getCachedPeerId(user/clawd)    → Read cache.json
     └─► MISS: await Promise.all(peers.getOrCreate) → Write cache.json
-[7] sessions.peers.set()            → FIRE-AND-FORGET (no await)
-[8] setSessionForPath()             → Write config.json (if new session)
-[9] loadClaudisLocalContext()       → Read clawd-context.md (INSTANT)
-[10] Promise.allSettled([5 API calls]) → PARALLEL:
+[11] sessions.peers.set()           → FIRE-AND-FORGET (no await)
+[12] Upload git changes as observations → FIRE-AND-FORGET (if changes detected)
+[13] setSessionForPath()            → Write config.json (if new session)
+[14] loadClawdLocalContext()        → Read clawd-context.md (INSTANT)
+[15] Promise.allSettled([5 API calls]) → PARALLEL (with git-aware queries):
     ├─► peers.getContext(user)
     ├─► peers.getContext(clawd)
     ├─► sessions.summaries()
-    ├─► peers.chat(user)        # $0.03 per call
-    └─► peers.chat(clawd)       # $0.03 per call
-[11] setCachedUserContext()         → Write context-cache.json
-[12] setCachedClawdContext()        → Write context-cache.json
-[13] displayHonchoStartup()         → Show pixel art banner
-[14] console.log(context)           → Output to Claude
-[15] process.exit(0)
+    ├─► peers.chat(user, {query: "...on branch X..."})    # $0.03
+    └─► peers.chat(clawd, {query: "...on branch X..."})   # $0.03
+[16] setCachedUserContext()         → Write context-cache.json
+[17] setCachedClawdContext()        → Write context-cache.json
+[18] displayHonchoStartup()         → Show pixel art banner
+[19] console.log(context)           → Output to Claude (includes git state + changes)
+[20] process.exit(0)
 ```
 
 ### User Prompt (`user-prompt.ts`)
@@ -532,6 +586,7 @@ workspaces.sessions.messages.create(workspaceId, sessionId, {messages})
 | `cache.json` | ALL | WRITE | Yes | **MEDIUM** |
 | `context-cache.json` | user-prompt | READ+WRITE | Yes | **HIGH** |
 | `context-cache.json` | session-start | WRITE | Yes | Low |
+| `git-state.json` | session-start | READ+WRITE | Yes | Low |
 | `message-queue.jsonl` | user-prompt | APPEND | Yes | **MEDIUM** |
 | `message-queue.jsonl` | session-end | READ+CLEAR | Yes | **MEDIUM** |
 | `clawd-context.md` | session-start | READ | Yes | Low |
