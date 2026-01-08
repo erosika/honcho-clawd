@@ -4,6 +4,7 @@
  */
 
 import { openSync, writeSync, closeSync } from "fs";
+import { blocks, circles } from "./unicode.js";
 
 // ANSI color codes
 const c = {
@@ -25,6 +26,16 @@ const c = {
   dim: "\x1b[2m",
 };
 
+// Block characters (runtime generated to survive bundling)
+const B = {
+  full: blocks.full,           // █
+  upper: blocks.upperHalf,     // ▀
+  lower: blocks.lowerHalf,     // ▄
+};
+
+// Circle for eyes
+const eye = circles.filled;    // ●
+
 /**
  * Simple clean Honcho face - solid peach circle with dark eyes
  * Uses background colors for solid fill effect
@@ -36,9 +47,9 @@ export function renderHoncho(): string[] {
 
   // Clean 3-row face: rounded top, eyes in middle, rounded bottom
   return [
-    `  ${p}▄████▄${r}  `,
-    ` ${p}██${d}▀${p}██${d}▀${p}██${r} `,
-    `  ${p}▀████▀${r}  `,
+    `  ${p}${B.lower}${B.full}${B.full}${B.full}${B.full}${B.lower}${r}  `,
+    ` ${p}${B.full}${B.full}${d}${B.upper}${p}${B.full}${B.full}${d}${B.upper}${p}${B.full}${B.full}${r} `,
+    `  ${p}${B.upper}${B.full}${B.full}${B.full}${B.full}${B.upper}${r}  `,
   ];
 }
 
@@ -47,13 +58,12 @@ export function renderHoncho(): string[] {
  */
 export function renderHonchoSmile(): string[] {
   const p = c.peach;
-  const d = c.dark;
   const r = c.reset;
 
   return [
-    `  ${p}▄████▄${r}  `,
-    ` ${p}██${r}▀${p}██${r}▀${p}██${r} `,
-    `  ${p}▀${r}▄▄▄▄${p}▀${r}  `,
+    `  ${p}${B.lower}${B.full}${B.full}${B.full}${B.full}${B.lower}${r}  `,
+    ` ${p}${B.full}${B.full}${r}${B.upper}${p}${B.full}${B.full}${r}${B.upper}${p}${B.full}${B.full}${r} `,
+    `  ${p}${B.upper}${r}${B.lower}${B.lower}${B.lower}${B.lower}${p}${B.upper}${r}  `,
   ];
 }
 
@@ -65,9 +75,9 @@ export function renderHonchoWide(): string[] {
   const r = c.reset;
 
   return [
-    `  ${p}▄██████▄${r}  `,
-    ` ${p}███${r}▀${p}██${r}▀${p}███${r} `,
-    `  ${p}▀██████▀${r}  `,
+    `  ${p}${B.lower}${B.full}${B.full}${B.full}${B.full}${B.full}${B.full}${B.lower}${r}  `,
+    ` ${p}${B.full}${B.full}${B.full}${r}${B.upper}${p}${B.full}${B.full}${r}${B.upper}${p}${B.full}${B.full}${B.full}${r} `,
+    `  ${p}${B.upper}${B.full}${B.full}${B.full}${B.full}${B.full}${B.full}${B.upper}${r}  `,
   ];
 }
 
@@ -79,9 +89,9 @@ export function renderHonchoCompact(): string[] {
   const r = c.reset;
 
   return [
-    ` ${p}▄███▄${r} `,
-    `${p}██${r}▀${p}█${r}▀${p}██${r}`,
-    ` ${p}▀███▀${r} `,
+    ` ${p}${B.lower}${B.full}${B.full}${B.full}${B.lower}${r} `,
+    `${p}${B.full}${B.full}${r}${B.upper}${p}${B.full}${r}${B.upper}${p}${B.full}${B.full}${r}`,
+    ` ${p}${B.upper}${B.full}${B.full}${B.full}${B.upper}${r} `,
   ];
 }
 
@@ -94,15 +104,14 @@ export function renderHonchoGradient(): string[] {
   const p = c.peach;       // main body
   const s = c.salmon;      // edge accent
   const e = c.black;       // eyes (high contrast)
-  const w = c.pale;        // eye whites/highlights
   const b = c.cream;       // mouth/smile area
   const r = c.reset;
 
   // Simplified peachy blob face - rounder, clearer eyes
   return [
-    `  ${o}▄${s}████${o}▄${r}  `,
-    ` ${s}█${e}●${p}██${e}●${s}█${r} `,
-    `  ${o}▀${b}▄▄▄▄${o}▀${r}  `,
+    `  ${o}${B.lower}${s}${B.full}${B.full}${B.full}${B.full}${o}${B.lower}${r}  `,
+    ` ${s}${B.full}${e}${eye}${p}${B.full}${B.full}${e}${eye}${s}${B.full}${r} `,
+    `  ${o}${B.upper}${b}${B.lower}${B.lower}${B.lower}${B.lower}${o}${B.upper}${r}  `,
   ];
 }
 
@@ -114,9 +123,9 @@ export function renderHonchoMinimal(): string[] {
   const r = c.reset;
 
   return [
-    ` ${p}▄██▄${r} `,
-    `${p}█${r}▀${p}█${r}▀${p}█${r}`,
-    ` ${p}▀██▀${r} `,
+    ` ${p}${B.lower}${B.full}${B.full}${B.lower}${r} `,
+    `${p}${B.full}${r}${B.upper}${p}${B.full}${r}${B.upper}${p}${B.full}${r}`,
+    ` ${p}${B.upper}${B.full}${B.full}${B.upper}${r} `,
   ];
 }
 

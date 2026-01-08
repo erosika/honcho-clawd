@@ -4,6 +4,7 @@
  */
 
 import { openSync, writeSync, closeSync } from "fs";
+import { blocks, circles, stars, braille, brackets } from "./unicode.js";
 
 // ANSI color codes - orange to pale light blue gradient
 const c = {
@@ -29,23 +30,34 @@ const c = {
   yellow: "\x1b[38;5;221m",
 };
 
-// Wave characters - smooth sine wave feel
-const waveChars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂"];
+// Wave characters - smooth sine wave feel (runtime generated)
+const waveChars = [
+  blocks.lower1_8, blocks.lower2_8, blocks.lower3_8, blocks.lower4_8,
+  blocks.lower5_8, blocks.lower6_8, blocks.lower7_8, blocks.full,
+  blocks.lower7_8, blocks.lower6_8, blocks.lower5_8, blocks.lower4_8,
+  blocks.lower3_8, blocks.lower2_8
+];
 
-// Braille patterns for a flowing "thinking" animation
-const brailleWave = ["⣾", "⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽"];
+// Braille patterns for a flowing "thinking" animation (runtime generated)
+const brailleWave = braille.wave;
 
-// Bouncing dots animation
-const bounceDots = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// Bouncing dots animation (runtime generated)
+const bounceDots = braille.dots;
 
-// Moon phases using Unicode circles (no emojis)
-const moonPhases = ["○", "◔", "◑", "◕", "●", "◕", "◑", "◔"];
+// Moon phases using Unicode circles (runtime generated)
+const moonPhases = [
+  circles.empty, circles.upperRight, circles.rightHalf, circles.lowerRight,
+  circles.filled, circles.lowerRight, circles.rightHalf, circles.upperRight
+];
 
-// Sparkle characters that pulse
-const sparkles = ["⋆", "✧", "✦", "✧", "⊹", "✶", "✴", "✸"];
+// Sparkle characters that pulse (runtime generated)
+const sparkles = [
+  stars.small, stars.sparkle1, stars.sparkle2, stars.sparkle1,
+  stars.sparkle3, stars.star6, stars.star4, stars.star8
+];
 
-// Neural network / thinking symbols
-const neuralChars = ["◐", "◓", "◑", "◒"];
+// Neural network / thinking symbols (runtime generated)
+const neuralChars = [circles.leftHalf, circles.upperHalf, circles.rightHalf, circles.lowerHalf];
 
 // ASCII-safe alternatives (works in any terminal)
 const asciiDots = [".  ", ".. ", "...", " ..", "  .", " ..", "...", ".. "];
@@ -160,8 +172,8 @@ export class Spinner {
       output = leftSparkle + wave + rightSparkle;
     } else if (this.style === "neural") {
       // Neural network thinking animation
-      const prefix = c.c4 + "⟨" + c.reset;
-      const suffix = c.c4 + "⟩" + c.reset;
+      const prefix = c.c4 + brackets.angleLeft + c.reset;
+      const suffix = c.c4 + brackets.angleRight + c.reset;
 
       let inner = "";
       for (let i = 0; i < 6; i++) {
@@ -258,7 +270,7 @@ export class Spinner {
 
     if (successMessage) {
       // Pretty success message - use ASCII-safe symbol if needed
-      const sparkle = this.useAscii ? (c.c5 + "*" + c.reset) : (c.c5 + "✦" + c.reset);
+      const sparkle = this.useAscii ? (c.c5 + "*" + c.reset) : (c.c5 + stars.sparkle2 + c.reset);
       this.write(`${sparkle} ${c.green}${successMessage}${c.reset}\n`);
     }
 
@@ -275,7 +287,7 @@ export class Spinner {
 
     if (message) {
       // Use ASCII-safe symbol if needed
-      const x = this.useAscii ? "x" : "✗";
+      const x = this.useAscii ? "x" : String.fromCodePoint(0x2717);
       this.write(`${c.red}${x}${c.reset} ${c.dim}${message}${c.reset}\n`);
     }
 
@@ -283,21 +295,28 @@ export class Spinner {
   }
 }
 
-// Cooldown animation characters - reverse energy flow
+// Cooldown animation characters - reverse energy flow (runtime generated)
 const cooldownFrames = [
-  "████████",
-  "▓▓▓▓▓▓▓▓",
-  "▒▒▒▒▒▒▒▒",
-  "░░░░░░░░",
-  "▒▒▒▒▒▒▒▒",
-  "░░░░░░░░",
+  blocks.full.repeat(8),
+  blocks.dark.repeat(8),
+  blocks.medium.repeat(8),
+  blocks.light.repeat(8),
+  blocks.medium.repeat(8),
+  blocks.light.repeat(8),
   "        ",
-  "░░░░░░░░",
+  blocks.light.repeat(8),
   "        ",
 ];
 
-// Fading dots for shutdown
-const fadeDots = ["●●●●", "●●●○", "●●○○", "●○○○", "○○○○", "    "];
+// Fading dots for shutdown (runtime generated)
+const fadeDots = [
+  circles.filled.repeat(4),
+  circles.filled.repeat(3) + circles.empty,
+  circles.filled.repeat(2) + circles.empty.repeat(2),
+  circles.filled + circles.empty.repeat(3),
+  circles.empty.repeat(4),
+  "    "
+];
 
 /**
  * Play a cooldown animation when Claude shuts down
@@ -358,8 +377,8 @@ export async function playCooldown(message = "saving memory"): Promise<void> {
       const dotStr = dots[dotIndex];
 
       // Brackets - ASCII-safe if needed
-      const prefix = useAscii ? (currentColor + "<" + c.reset) : (currentColor + "⟨" + c.reset);
-      const suffix = useAscii ? (currentColor + ">" + c.reset) : (currentColor + "⟩" + c.reset);
+      const prefix = useAscii ? (currentColor + "<" + c.reset) : (currentColor + brackets.angleLeft + c.reset);
+      const suffix = useAscii ? (currentColor + ">" + c.reset) : (currentColor + brackets.angleRight + c.reset);
 
       const output = prefix + currentColor + bar + suffix + " " + currentColor + dotStr + c.reset + " " + c.dim + message + c.reset;
 
@@ -370,7 +389,7 @@ export async function playCooldown(message = "saving memory"): Promise<void> {
         clearInterval(interval);
         // Final clear and goodbye
         write("\r\x1b[K");
-        const sparkle = useAscii ? (c.c5 + "*" + c.reset) : (c.c5 + "✦" + c.reset);
+        const sparkle = useAscii ? (c.c5 + "*" + c.reset) : (c.c5 + stars.sparkle2 + c.reset);
         write(`${sparkle} ${c.dim}memory saved${c.reset}\n`);
         write("\x1b[?25h");
         closeTTY();
