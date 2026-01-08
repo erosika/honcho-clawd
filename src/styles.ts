@@ -33,17 +33,17 @@ export const colors = {
   gray: "\x1b[38;5;245m",
 };
 
-// Unicode symbols (tasteful, no emojis)
+// Unicode symbols generated at runtime (survives bundling)
 export const symbols = {
-  check: "✓",
-  cross: "✗",
-  dot: "·",
-  bullet: "•",
-  arrow: "→",
-  line: "─",
-  corner: "└",
-  pipe: "│",
-  sparkle: "✦",
+  check: String.fromCodePoint(0x2713),      // ✓
+  cross: String.fromCodePoint(0x2717),      // ✗
+  dot: String.fromCodePoint(0x00B7),        // ·
+  bullet: String.fromCodePoint(0x2022),     // •
+  arrow: String.fromCodePoint(0x2192),      // →
+  line: String.fromCodePoint(0x2500),       // ─
+  corner: String.fromCodePoint(0x2514),     // └
+  pipe: String.fromCodePoint(0x2502),       // │
+  sparkle: String.fromCodePoint(0x2726),    // ✦
 };
 
 /**
