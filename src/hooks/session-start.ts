@@ -1,5 +1,5 @@
 import Honcho from "@honcho-ai/core";
-import { loadConfig, getSessionForPath, setSessionForPath } from "../config.js";
+import { loadConfig, getSessionForPath, setSessionForPath, getHonchoClientOptions } from "../config.js";
 import { basename } from "path";
 import {
   getCachedWorkspaceId,
@@ -89,10 +89,7 @@ export async function handleSessionStart(): Promise<void> {
   spinner.start("loading memory");
 
   try {
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     // Step 1: Get or create workspace (use cache if available)
     spinner.update("Connecting to workspace");

@@ -1,5 +1,5 @@
 import Honcho from "@honcho-ai/core";
-import { loadConfig, getSessionForPath } from "../config.js";
+import { loadConfig, getSessionForPath, getHonchoClientOptions } from "../config.js";
 import { basename } from "path";
 import {
   getCachedWorkspaceId,
@@ -114,10 +114,7 @@ async function logToHonchoAsync(config: any, cwd: string, summary: string): Prom
     return;
   }
 
-  const client = new Honcho({
-    apiKey: config.apiKey,
-    environment: "production",
-  });
+  const client = new Honcho(getHonchoClientOptions(config));
 
   // Try to use cached IDs for speed
   let workspaceId = getCachedWorkspaceId(config.workspace);

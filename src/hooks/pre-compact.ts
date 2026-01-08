@@ -1,5 +1,5 @@
 import Honcho from "@honcho-ai/core";
-import { loadConfig, getSessionForPath } from "../config.js";
+import { loadConfig, getSessionForPath, getHonchoClientOptions } from "../config.js";
 import { basename } from "path";
 import {
   getCachedWorkspaceId,
@@ -142,10 +142,7 @@ export async function handlePreCompact(): Promise<void> {
   }
 
   try {
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     // Get workspace ID (use cache)
     let workspaceId = getCachedWorkspaceId(config.workspace);

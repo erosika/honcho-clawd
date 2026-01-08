@@ -10,7 +10,11 @@ import {
   setSessionForPath,
   getAllSessions,
   removeSessionForPath,
+  getEndpointInfo,
+  setEndpoint,
+  getHonchoClientOptions,
   type HonchoCLAWDConfig,
+  type HonchoEnvironment,
 } from "./config.js";
 import Honcho from "@honcho-ai/core";
 import { installHooks, uninstallHooks, checkHooksInstalled, verifyCommandAvailable, checkLegacyBinaries } from "./install.js";
@@ -62,19 +66,33 @@ async function init(): Promise<void> {
   // Step 1: API Key (needed to connect and discover existing resources)
   console.log(s.section("Step 1: Honcho API Key"));
   console.log(s.dim("Get your API key from https://app.honcho.dev"));
-  const apiKey = await prompt("Enter your Honcho API key: ");
-  if (!apiKey) {
+  console.log(s.dim(`Type ${s.highlight("local")} to use a local Honcho instance (http://localhost:8000)`));
+  const apiKeyInput = await prompt("Enter your Honcho API key: ");
+  if (!apiKeyInput) {
     console.error("Error: API key is required.");
     process.exit(1);
+  }
+
+  // Check if user wants local mode
+  const isLocal = apiKeyInput.toLowerCase() === "local";
+  let apiKey: string;
+  let endpointEnv: HonchoEnvironment = "production";
+
+  if (isLocal) {
+    console.log(s.success("Local mode enabled"));
+    apiKey = await prompt("Enter local API key (or press enter for 'local'): ") || "local";
+    endpointEnv = "local";
+  } else {
+    apiKey = apiKeyInput;
   }
 
   // Validate API key by connecting
   const client = new Honcho({
     apiKey,
-    environment: "production",
+    environment: endpointEnv,
   });
 
-  console.log("Connecting to Honcho...");
+  console.log(`Connecting to Honcho ${isLocal ? "(local)" : "(SaaS)"}...`);
 
   // Step 2: Workspace - Try to discover existing honcho-clawd workspaces first
   console.log("");
@@ -250,6 +268,9 @@ async function init(): Promise<void> {
     workspace,
     claudePeer,
     saveMessages,
+    endpoint: {
+      environment: endpointEnv,
+    },
   };
 
   saveConfig(config);
@@ -462,10 +483,7 @@ async function sessionNew(name?: string): Promise<void> {
 
   try {
     // Connect to Honcho
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     const workspace = await client.workspaces.getOrCreate({
       id: config.workspace,
@@ -550,10 +568,7 @@ async function sessionList(): Promise<void> {
 
   // Try to list sessions from Honcho
   try {
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     const workspace = await client.workspaces.getOrCreate({
       id: config.workspace,
@@ -663,10 +678,7 @@ async function workspaceList(): Promise<void> {
   console.log(`${s.label("Current")}: ${s.highlight(config.workspace)}`);
 
   try {
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     const workspaces = await (client as any).workspaces.list();
     if (workspaces && Array.isArray(workspaces)) {
@@ -714,10 +726,7 @@ async function workspaceSwitch(name: string): Promise<void> {
   const oldWorkspace = config.workspace;
 
   try {
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     // Verify or create the workspace
     await client.workspaces.getOrCreate({
@@ -763,10 +772,7 @@ async function workspaceRename(newName: string): Promise<void> {
   }
 
   try {
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     // Create the new workspace
     await client.workspaces.getOrCreate({
@@ -824,10 +830,7 @@ async function peerList(): Promise<void> {
   console.log("");
 
   try {
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     const workspace = await client.workspaces.getOrCreate({
       id: config.workspace,
@@ -914,6 +917,89 @@ Session Management Commands:
   }
 }
 
+// ============================================
+// Endpoint Commands (SaaS vs Local)
+// ============================================
+
+async function handleEndpoint(subcommand: string, arg?: string): Promise<void> {
+  const config = loadConfig();
+  if (!config) {
+    console.error(s.error("Not configured. Run: honcho-clawd init"));
+    process.exit(1);
+  }
+
+  switch (subcommand) {
+    case "status":
+    case undefined:
+    case "": {
+      const info = getEndpointInfo(config);
+      console.log("");
+      console.log(s.header("Honcho Endpoint"));
+      console.log(`  ${s.label("Type")}:  ${info.type}`);
+      console.log(`  ${s.label("URL")}:   ${info.url}`);
+      console.log("");
+      break;
+    }
+
+    case "saas":
+    case "production": {
+      setEndpoint("production");
+      const info = getEndpointInfo(loadConfig()!);
+      console.log(s.success(`Switched to SaaS: ${info.url}`));
+      break;
+    }
+
+    case "local": {
+      setEndpoint("local");
+      const info = getEndpointInfo(loadConfig()!);
+      console.log(s.success(`Switched to local: ${info.url}`));
+      break;
+    }
+
+    case "custom": {
+      if (!arg) {
+        console.error(s.error("Usage: honcho-clawd endpoint custom <url>"));
+        process.exit(1);
+      }
+      // Validate URL format
+      try {
+        new URL(arg);
+      } catch {
+        console.error(s.error(`Invalid URL: ${arg}`));
+        process.exit(1);
+      }
+      setEndpoint(undefined, arg);
+      console.log(s.success(`Switched to custom endpoint: ${arg}`));
+      break;
+    }
+
+    case "test": {
+      const info = getEndpointInfo(config);
+      console.log(s.dim(`Testing connection to ${info.url}...`));
+      try {
+        const clientOpts = getHonchoClientOptions(config);
+        const client = new Honcho(clientOpts);
+        await client.workspaces.getOrCreate({ id: config.workspace });
+        console.log(s.success("Connection successful"));
+      } catch (error: any) {
+        console.error(s.error(`Connection failed: ${error.message}`));
+        process.exit(1);
+      }
+      break;
+    }
+
+    default:
+      console.log(`
+${s.header("Endpoint Commands")}
+  honcho-clawd endpoint           Show current endpoint
+  honcho-clawd endpoint saas      Switch to SaaS (https://api.honcho.dev)
+  honcho-clawd endpoint local     Switch to local (http://localhost:8000)
+  honcho-clawd endpoint custom <url>  Use custom URL
+  honcho-clawd endpoint test      Test connection to current endpoint
+`);
+  }
+}
+
 function showHelp(): void {
   console.log("");
   console.log(`${s.colors.orange}honcho-clawd${s.colors.reset} ${s.dim(`v${VERSION}`)}`);
@@ -940,6 +1026,13 @@ function showHelp(): void {
   console.log(`  ${s.highlight("workspace list")}         List all workspaces`);
   console.log(`  ${s.highlight("workspace switch")} <n>   Switch to a different workspace`);
   console.log(`  ${s.highlight("workspace rename")} <n>   Create new workspace and switch to it`);
+  console.log("");
+  console.log(s.section("Endpoint Commands"));
+  console.log(`  ${s.highlight("endpoint")}               Show current endpoint (SaaS/local)`);
+  console.log(`  ${s.highlight("endpoint saas")}          Switch to SaaS (api.honcho.dev)`);
+  console.log(`  ${s.highlight("endpoint local")}         Switch to local (localhost:8000)`);
+  console.log(`  ${s.highlight("endpoint custom")} <url>  Use custom URL`);
+  console.log(`  ${s.highlight("endpoint test")}          Test connection`);
   console.log("");
   console.log(s.section("Peer Commands"));
   console.log(`  ${s.highlight("peer list")}              List all peers in workspace`);
@@ -980,6 +1073,9 @@ switch (command) {
     break;
   case "workspace":
     await handleWorkspace(args[1], args[2]);
+    break;
+  case "endpoint":
+    await handleEndpoint(args[1], args[2]);
     break;
   case "hook":
     await handleHook(args[1]);

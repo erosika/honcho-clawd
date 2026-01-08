@@ -1,5 +1,5 @@
 import Honcho from "@honcho-ai/core";
-import { loadConfig, getSessionForPath } from "../config.js";
+import { loadConfig, getSessionForPath, getHonchoClientOptions } from "../config.js";
 import { existsSync, readFileSync } from "fs";
 import { basename } from "path";
 import {
@@ -141,10 +141,7 @@ export async function handleSessionEnd(): Promise<void> {
   await playCooldown("saving memory");
 
   try {
-    const client = new Honcho({
-      apiKey: config.apiKey,
-      environment: "production",
-    });
+    const client = new Honcho(getHonchoClientOptions(config));
 
     // Get or create workspace (use cache)
     let workspaceId = getCachedWorkspaceId(config.workspace);

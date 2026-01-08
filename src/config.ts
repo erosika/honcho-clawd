@@ -14,6 +14,17 @@ export interface ContextRefreshConfig {
   skipDialectic?: boolean; // Skip chat() calls in user-prompt (default: true, saves $0.03/call)
 }
 
+export interface LocalContextConfig {
+  maxEntries?: number; // Max entries in clawd-context.md (default: 50)
+}
+
+export type HonchoEnvironment = "production" | "local";
+
+export interface HonchoEndpointConfig {
+  environment?: HonchoEnvironment; // "production" (SaaS) or "local" (localhost:8000)
+  baseUrl?: string; // Custom URL override (takes precedence over environment)
+}
+
 export interface HonchoCLAWDConfig {
   peerName: string; // The user's peer name
   apiKey: string; // Honcho API key
@@ -23,6 +34,8 @@ export interface HonchoCLAWDConfig {
   saveMessages?: boolean; // Save messages to Honcho (default: true)
   messageUpload?: MessageUploadConfig; // Token-based upload limits (default: no limits)
   contextRefresh?: ContextRefreshConfig; // Context retrieval settings
+  endpoint?: HonchoEndpointConfig; // SaaS vs local instance config
+  localContext?: LocalContextConfig; // Local clawd-context.md settings
 }
 
 const CONFIG_DIR = join(homedir(), ".honcho-clawd");
@@ -117,6 +130,13 @@ export function getContextRefreshConfig(): ContextRefreshConfig {
   };
 }
 
+export function getLocalContextConfig(): LocalContextConfig {
+  const config = loadConfig();
+  return {
+    maxEntries: config?.localContext?.maxEntries ?? 50, // Default 50 entries
+  };
+}
+
 // Simple token estimation (chars / 4)
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -129,4 +149,67 @@ export function truncateToTokens(text: string, maxTokens: number): string {
     return text;
   }
   return text.slice(0, estimatedChars - 3) + "...";
+}
+
+// ============================================
+// Honcho Client Options Helper
+// ============================================
+
+export interface HonchoClientOptions {
+  apiKey: string;
+  environment?: HonchoEnvironment;
+  baseURL?: string;
+}
+
+/**
+ * Get Honcho client options based on config.
+ * Priority: baseUrl > environment > "production" (default)
+ */
+export function getHonchoClientOptions(config: HonchoCLAWDConfig): HonchoClientOptions {
+  const options: HonchoClientOptions = {
+    apiKey: config.apiKey,
+  };
+
+  if (config.endpoint?.baseUrl) {
+    // Custom URL takes precedence
+    options.baseURL = config.endpoint.baseUrl;
+  } else if (config.endpoint?.environment) {
+    // Use configured environment
+    options.environment = config.endpoint.environment;
+  } else {
+    // Default to production (SaaS)
+    options.environment = "production";
+  }
+
+  return options;
+}
+
+/**
+ * Get current endpoint display info
+ */
+export function getEndpointInfo(config: HonchoCLAWDConfig): { type: string; url: string } {
+  if (config.endpoint?.baseUrl) {
+    return { type: "custom", url: config.endpoint.baseUrl };
+  }
+  if (config.endpoint?.environment === "local") {
+    return { type: "local", url: "http://localhost:8000" };
+  }
+  return { type: "production", url: "https://api.honcho.dev" };
+}
+
+/**
+ * Set endpoint configuration
+ */
+export function setEndpoint(
+  environment?: HonchoEnvironment,
+  baseUrl?: string
+): void {
+  const config = loadConfig();
+  if (!config) return;
+
+  config.endpoint = {
+    environment,
+    baseUrl,
+  };
+  saveConfig(config);
 }

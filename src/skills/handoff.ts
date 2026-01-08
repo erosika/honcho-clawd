@@ -7,7 +7,7 @@
  */
 
 import Honcho from "@honcho-ai/core";
-import { loadConfig, getSessionForPath } from "../config.js";
+import { loadConfig, getSessionForPath, getHonchoClientOptions } from "../config.js";
 import { basename } from "path";
 import {
   getCachedWorkspaceId,
@@ -240,10 +240,7 @@ export async function generateHandoff(options: HandoffOptions = {}): Promise<str
   const instanceId = getClaudeInstanceId();
   const messageCount = options.messageCount ?? DEFAULT_MESSAGE_COUNT;
 
-  const client = new Honcho({
-    apiKey: config.apiKey,
-    environment: "production",
-  });
+  const client = new Honcho(getHonchoClientOptions(config));
 
   // Get or create workspace
   let workspaceId = getCachedWorkspaceId(config.workspace);

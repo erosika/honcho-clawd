@@ -1,7 +1,7 @@
 import { homedir } from "os";
 import { join } from "path";
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from "fs";
-import { getContextRefreshConfig } from "./config.js";
+import { getContextRefreshConfig, getLocalContextConfig } from "./config.js";
 
 const CACHE_DIR = join(homedir(), ".honcho-clawd");
 const ID_CACHE_FILE = join(CACHE_DIR, "cache.json");
@@ -309,13 +309,14 @@ export function appendClawdWork(workDescription: string): void {
     existing = `# CLAWD Work Context\n\nAuto-generated log of CLAWD's recent work.\n\n## Recent Activity\n`;
   }
 
-  // Keep only last 50 entries to prevent file from growing too large
+  // Keep only last N entries to prevent file from growing too large
+  const { maxEntries } = getLocalContextConfig();
   const lines = existing.split("\n");
   const activityStart = lines.findIndex((l) => l.includes("## Recent Activity"));
   if (activityStart !== -1) {
     const header = lines.slice(0, activityStart + 1);
     const activities = lines.slice(activityStart + 1).filter((l) => l.trim());
-    const recentActivities = activities.slice(-49); // Keep last 49, add 1 new
+    const recentActivities = activities.slice(-(maxEntries - 1)); // Keep last N-1, add 1 new
     existing = [...header, ...recentActivities].join("\n");
   }
 
