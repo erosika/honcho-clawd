@@ -18,9 +18,10 @@
    - `formatMemoryAnchor()` for pre-compact PRESERVE markers
    - `deduplicateFacts()` for semantic deduplication
 
-3. **Message Batching Utilities** - `src/cache.ts`
-   - `getMessageBatches()` for efficient API uploads (up to 100 per batch)
+3. **Message Queue Utilities** - `src/cache.ts`
+   - `getMessageBatches()` for backup recovery at session-end only
    - `getPendingMessageCount()` for queue monitoring
+   - **Note**: Real-time upload is preferred so Honcho extracts facts immediately
 
 4. **Configuration Extensions** - `src/config.ts`
    - `contextRefresh.tier`: "essential" | "extended" | "deep"
@@ -34,8 +35,11 @@
 ### Pending (Future Work)
 
 - Tiered context loading in session-start hook
-- Message batch upload at session-end
 - A/B testing framework for context strategies
+
+### Design Decision: Real-Time Message Upload
+
+Batching messages was considered but rejected. Honcho's value is **real-time knowledge extraction** - it builds the knowledge graph as conversation happens. Delaying uploads would mean stale context during the session. The current immediate-upload pattern is correct.
 
 ## Executive Summary
 
