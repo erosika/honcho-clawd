@@ -104,7 +104,13 @@ interface ContextCache {
   summaries?: { data: any; fetchedAt: number };
   messageCount?: number; // Track messages since last refresh
   lastRefreshMessageCount?: number; // Message count at last knowledge graph refresh
+  // Dialectic response caching (saves $0.06/session)
+  userDialectic?: { content: string; fetchedAt: number };
+  clawdDialectic?: { content: string; fetchedAt: number };
 }
+
+// Dialectic cache TTL: 2 hours (longer than context since it's LLM-synthesized)
+const DIALECTIC_TTL = 2 * 60 * 60 * 1000;
 
 // These are now configurable via config.json, with defaults in getContextRefreshConfig()
 function getContextTTL(): number {
@@ -199,6 +205,44 @@ export function resetMessageCount(): void {
 }
 
 // ============================================
+// Dialectic Response Caching ($0.03 per call saved)
+// ============================================
+
+export function getCachedUserDialectic(): string | null {
+  const cache = loadContextCache();
+  if (cache.userDialectic && Date.now() - cache.userDialectic.fetchedAt < DIALECTIC_TTL) {
+    return cache.userDialectic.content;
+  }
+  return null;
+}
+
+export function setCachedUserDialectic(content: string): void {
+  const cache = loadContextCache();
+  cache.userDialectic = { content, fetchedAt: Date.now() };
+  saveContextCache(cache);
+}
+
+export function getCachedClawdDialectic(): string | null {
+  const cache = loadContextCache();
+  if (cache.clawdDialectic && Date.now() - cache.clawdDialectic.fetchedAt < DIALECTIC_TTL) {
+    return cache.clawdDialectic.content;
+  }
+  return null;
+}
+
+export function setCachedClawdDialectic(content: string): void {
+  const cache = loadContextCache();
+  cache.clawdDialectic = { content, fetchedAt: Date.now() };
+  saveContextCache(cache);
+}
+
+export function isDialecticCacheStale(): boolean {
+  const cache = loadContextCache();
+  if (!cache.userDialectic) return true;
+  return Date.now() - cache.userDialectic.fetchedAt >= DIALECTIC_TTL;
+}
+
+// ============================================
 // Message Queue - local file for reliability
 // ============================================
 
@@ -272,6 +316,27 @@ export function markMessagesUploaded(forCwd?: string): void {
   } catch {
     // ignore
   }
+}
+
+/**
+ * Get messages in batches for efficient upload (max 100 per batch per Honcho API)
+ */
+export function getMessageBatches(forCwd?: string, batchSize: number = 50): QueuedMessage[][] {
+  const messages = getQueuedMessages(forCwd);
+  if (messages.length === 0) return [];
+
+  const batches: QueuedMessage[][] = [];
+  for (let i = 0; i < messages.length; i += batchSize) {
+    batches.push(messages.slice(i, i + batchSize));
+  }
+  return batches;
+}
+
+/**
+ * Get count of pending messages
+ */
+export function getPendingMessageCount(forCwd?: string): number {
+  return getQueuedMessages(forCwd).length;
 }
 
 // ============================================

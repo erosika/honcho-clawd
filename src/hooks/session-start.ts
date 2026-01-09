@@ -16,9 +16,20 @@ import {
   getCachedGitState,
   setCachedGitState,
   detectGitChanges,
+  getCachedUserDialectic,
+  setCachedUserDialectic,
+  getCachedClawdDialectic,
+  setCachedClawdDialectic,
+  isDialecticCacheStale,
   type GitState,
   type GitStateChange,
 } from "../cache.js";
+import {
+  formatContext,
+  type FullContext,
+  type ContextTier,
+  type UserContext,
+} from "../context-format.js";
 import { Spinner } from "../spinner.js";
 import { displayHonchoStartup } from "../pixel.js";
 import { captureGitState, getRecentCommits, formatGitContext, isGitRepo, inferFeatureContext, formatFeatureContext } from "../git.js";
@@ -325,33 +336,57 @@ export async function handleSessionStart(): Promise<void> {
       ? ` Current work appears to be: ${featureContext.type} - ${featureContext.description}.`
       : "";
 
-    // Parallel API calls for rich context
+    // Check dialectic cache first (saves $0.06 per session if cached)
+    const cachedUserDialectic = getCachedUserDialectic();
+    const cachedClawdDialectic = getCachedClawdDialectic();
+    const dialecticStale = isDialecticCacheStale();
+
+    // Build parallel API call list (only fetch dialectic if cache is stale)
     const fetchStart = Date.now();
-    const [userContextResult, clawdContextResult, summariesResult, userChatResult, clawdChatResult] =
-      await Promise.allSettled([
-        // 1. Get user's context (with metadata filtering for relevant observations)
-        client.workspaces.peers.getContext(workspaceId, userPeerId!, {
-          max_observations: 30,
-          include_most_derived: true,
-        }),
-        // 2. Get clawd's context (self-awareness!)
-        client.workspaces.peers.getContext(workspaceId, clawdPeerId!, {
-          max_observations: 20,
-          include_most_derived: true,
-        }),
-        // 3. Get session summaries
-        client.workspaces.sessions.summaries(workspaceId, sessionId),
-        // 4. Dialectic: Ask about user (context-enhanced)
+    const apiPromises: Promise<any>[] = [
+      // 1. Get user's context (FREE, always fetch)
+      client.workspaces.peers.getContext(workspaceId, userPeerId!, {
+        max_observations: 30,
+        include_most_derived: true,
+      }),
+      // 2. Get clawd's context (FREE, always fetch)
+      client.workspaces.peers.getContext(workspaceId, clawdPeerId!, {
+        max_observations: 20,
+        include_most_derived: true,
+      }),
+      // 3. Get session summaries (FREE, always fetch)
+      client.workspaces.sessions.summaries(workspaceId, sessionId),
+    ];
+
+    // Only call dialectic API if cache is stale (saves $0.03 each)
+    if (dialecticStale || !cachedUserDialectic) {
+      logAsync("dialectic", "Cache stale, fetching fresh user dialectic ($0.03)");
+      apiPromises.push(
         client.workspaces.peers.chat(workspaceId, userPeerId!, {
           query: `Summarize what you know about ${config.peerName} in 2-3 sentences. Focus on their preferences, current projects, and working style.${branchContext}${changeContext}${featureHint}`,
           session_id: sessionId,
-        }),
-        // 5. Dialectic: Ask about clawd (self-reflection, context-enhanced)
+        })
+      );
+    } else {
+      logCache("hit", "userDialectic", "using cached ($0.03 saved)");
+      apiPromises.push(Promise.resolve({ content: cachedUserDialectic }));
+    }
+
+    if (dialecticStale || !cachedClawdDialectic) {
+      logAsync("dialectic", "Cache stale, fetching fresh clawd dialectic ($0.03)");
+      apiPromises.push(
         client.workspaces.peers.chat(workspaceId, clawdPeerId!, {
           query: `What has ${config.claudePeer} been working on recently?${branchContext}${featureHint} Summarize the AI assistant's recent activities and focus areas relevant to the current work context.`,
           session_id: sessionId,
-        }),
-      ]);
+        })
+      );
+    } else {
+      logCache("hit", "clawdDialectic", "using cached ($0.03 saved)");
+      apiPromises.push(Promise.resolve({ content: cachedClawdDialectic }));
+    }
+
+    const [userContextResult, clawdContextResult, summariesResult, userChatResult, clawdChatResult] =
+      await Promise.allSettled(apiPromises);
 
     // Log async results
     const fetchDuration = Date.now() - fetchStart;
@@ -408,14 +443,26 @@ export async function handleSessionStart(): Promise<void> {
       }
     }
 
-    // Process user dialectic response
+    // Process user dialectic response (cache if fresh fetch)
     if (userChatResult.status === "fulfilled" && userChatResult.value?.content) {
-      contextParts.push(`## AI Summary of ${config.peerName}\n${userChatResult.value.content}`);
+      const dialecticContent = userChatResult.value.content;
+      // Cache fresh dialectic response
+      if (dialecticStale || !cachedUserDialectic) {
+        setCachedUserDialectic(dialecticContent);
+        logCache("write", "userDialectic", "cached for 2h");
+      }
+      contextParts.push(`## AI Summary of ${config.peerName}\n${dialecticContent}`);
     }
 
-    // Process clawd dialectic response (self-reflection)
+    // Process clawd dialectic response (cache if fresh fetch)
     if (clawdChatResult.status === "fulfilled" && clawdChatResult.value?.content) {
-      contextParts.push(`## AI Self-Reflection (What ${config.claudePeer} Has Been Doing)\n${clawdChatResult.value.content}`);
+      const dialecticContent = clawdChatResult.value.content;
+      // Cache fresh dialectic response
+      if (dialecticStale || !cachedClawdDialectic) {
+        setCachedClawdDialectic(dialecticContent);
+        logCache("write", "clawdDialectic", "cached for 2h");
+      }
+      contextParts.push(`## AI Self-Reflection (What ${config.claudePeer} Has Been Doing)\n${dialecticContent}`);
     }
 
     // Stop spinner and display pixel art
