@@ -28,11 +28,60 @@ interface HookInput {
 const SKIP_CONTEXT_PATTERNS = [
   /^(yes|no|ok|sure|thanks|y|n|yep|nope|yeah|nah|continue|go ahead|do it|proceed)$/i,
   /^\//, // slash commands
-  /^.{1,19}$/, // very short (< 20 chars)
 ];
+
+/**
+ * Extract meaningful topics from a prompt for semantic search
+ * Instead of crude truncation (prompt.slice(0,500)), extract entities and terms
+ */
+function extractTopics(prompt: string): string[] {
+  const topics: string[] = [];
+
+  // Extract file paths (high signal)
+  const filePaths = prompt.match(/[\w\-\/\.]+\.(ts|tsx|js|jsx|py|rs|go|md|json|yaml|yml|toml|sql)/gi) || [];
+  topics.push(...filePaths.slice(0, 5));
+
+  // Extract quoted strings (explicit references)
+  const quoted = prompt.match(/"([^"]+)"/g)?.map(q => q.slice(1, -1)) || [];
+  topics.push(...quoted.slice(0, 3));
+
+  // Extract technical terms (common frameworks/tools)
+  const techTerms = prompt.match(/\b(react|vue|svelte|angular|elysia|express|fastapi|django|flask|postgres|redis|docker|kubernetes|bun|node|deno|typescript|python|rust|go|graphql|rest|api|auth|oauth|jwt|stripe|webhook)\b/gi) || [];
+  topics.push(...[...new Set(techTerms.map(t => t.toLowerCase()))].slice(0, 5));
+
+  // Extract error patterns (debugging context)
+  const errors = prompt.match(/error[:\s]+[\w\s]+|failed[:\s]+[\w\s]+|exception[:\s]+[\w\s]+/gi) || [];
+  topics.push(...errors.slice(0, 2));
+
+  // If we found meaningful topics, use them; otherwise fall back to first 200 chars
+  if (topics.length > 0) {
+    return [...new Set(topics)];
+  }
+
+  // Fallback: extract meaningful words (>3 chars, not common words)
+  const commonWords = new Set(['the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'are', 'was', 'were', 'been', 'being', 'has', 'had', 'does', 'did', 'will', 'would', 'could', 'should', 'can', 'may', 'might', 'must', 'shall', 'need', 'want', 'like', 'just', 'also', 'more', 'some', 'what', 'when', 'where', 'which', 'who', 'how', 'why', 'all', 'each', 'every', 'both', 'few', 'most', 'other', 'into', 'over', 'such', 'only', 'same', 'than', 'very', 'your', 'make', 'take', 'come', 'give', 'look', 'think', 'know', 'see', 'time', 'year', 'people', 'way', 'day', 'man', 'woman', 'child', 'world', 'life', 'hand', 'part', 'place', 'case', 'week', 'company', 'system', 'program', 'question', 'work', 'government', 'number', 'night', 'point', 'home', 'water', 'room', 'mother', 'area', 'money', 'story', 'fact', 'month', 'lot', 'right', 'study', 'book', 'eye', 'job', 'word', 'business', 'issue', 'side', 'kind', 'head', 'house', 'service', 'friend', 'father', 'power', 'hour', 'game', 'line', 'end', 'member', 'law', 'car', 'city', 'community', 'name']);
+  const words = prompt.toLowerCase().match(/\b[a-z]{4,}\b/g) || [];
+  const meaningfulWords = words.filter(w => !commonWords.has(w));
+  return [...new Set(meaningfulWords)].slice(0, 10);
+}
 
 function shouldSkipContextRetrieval(prompt: string): boolean {
   return SKIP_CONTEXT_PATTERNS.some((p) => p.test(prompt.trim()));
+}
+
+/**
+ * Sort facts by recency (most recent first)
+ * Falls back to original order if no timestamps available
+ */
+function sortByRecency<T extends { created_at?: string; metadata?: { created_at?: string } }>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const aTime = a.created_at || a.metadata?.created_at || '';
+    const bTime = b.created_at || b.metadata?.created_at || '';
+    if (!aTime && !bTime) return 0;
+    if (!aTime) return 1;
+    if (!bTime) return -1;
+    return new Date(bTime).getTime() - new Date(aTime).getTime();
+  });
 }
 
 function getSessionName(cwd: string): string {
@@ -139,6 +188,7 @@ async function uploadMessageAsync(config: any, cwd: string, prompt: string): Pro
   // Try to use cached IDs for speed
   let workspaceId = getCachedWorkspaceId(config.workspace);
   let sessionId = getCachedSessionId(cwd);
+  const sessionName = getSessionName(cwd);
 
   if (!workspaceId || !sessionId) {
     // No cache - need full setup and cache the results
@@ -146,7 +196,6 @@ async function uploadMessageAsync(config: any, cwd: string, prompt: string): Pro
     workspaceId = workspace.id;
     setCachedWorkspaceId(config.workspace, workspaceId);
 
-    const sessionName = getSessionName(cwd);
     const session = await client.workspaces.sessions.getOrCreate(workspaceId, {
       id: sessionName,
       metadata: { cwd },
@@ -155,13 +204,17 @@ async function uploadMessageAsync(config: any, cwd: string, prompt: string): Pro
     setCachedSessionId(cwd, sessionName, sessionId);
   }
 
-  // Include instance_id in metadata for parallel session support
+  // Include instance_id and session_affinity in metadata
+  // session_affinity helps Honcho's deriver tag extracted facts with their source project
   const instanceId = getClaudeInstanceId();
   await client.workspaces.sessions.messages.create(workspaceId, sessionId, {
     messages: [{
       content: prompt,
       peer_id: config.peerName,
-      metadata: instanceId ? { instance_id: instanceId } : undefined,
+      metadata: {
+        ...(instanceId ? { instance_id: instanceId } : {}),
+        session_affinity: sessionName,  // Tag for project-scoped fact extraction
+      },
     }],
   });
 }
@@ -170,7 +223,9 @@ function formatCachedContext(context: any, peerName: string): string[] {
   const parts: string[] = [];
 
   if (context?.representation?.explicit?.length) {
-    const explicit = context.representation.explicit
+    // Sort by recency - recent facts are more relevant
+    const sorted = sortByRecency(context.representation.explicit);
+    const explicit = sorted
       .slice(0, 5)
       .map((e: any) => e.content || e)
       .join("; ");
@@ -178,7 +233,9 @@ function formatCachedContext(context: any, peerName: string): string[] {
   }
 
   if (context?.representation?.deductive?.length) {
-    const deductive = context.representation.deductive
+    // Sort by recency
+    const sorted = sortByRecency(context.representation.deductive);
+    const deductive = sorted
       .slice(0, 3)
       .map((d: any) => d.conclusion)
       .join("; ");
@@ -220,12 +277,18 @@ async function fetchFreshContext(config: any, cwd: string, prompt: string): Prom
   // Only use getContext() here - it's free/cheap and returns pre-computed knowledge
   // Skip chat() ($0.03 per call) - only use at session-start
   const startTime = Date.now();
+
+  // Extract meaningful topics instead of crude truncation
+  const topics = extractTopics(prompt);
+  const searchQuery = topics.length > 0 ? topics.join(' ') : prompt.slice(0, 200);
+
   const contextResult = await client.workspaces.peers.getContext(workspaceId, userPeerId, {
-    search_query: prompt.slice(0, 500),
+    search_query: searchQuery,
     search_top_k: 10,
     search_max_distance: 0.7,
     max_observations: 15,
     include_most_derived: true,
+    session_name: sessionName,  // SESSION-SCOPED for relevance
   });
 
   logApiCall("peers.getContext", "GET", `search query`, Date.now() - startTime, true);
@@ -235,7 +298,9 @@ async function fetchFreshContext(config: any, cwd: string, prompt: string): Prom
     logCache("write", "userContext", `${contextResult.representation?.explicit?.length || 0} facts`);
 
     if (contextResult.representation?.explicit?.length) {
-      const explicit = contextResult.representation.explicit
+      // Sort by recency - recent facts are more relevant
+      const sorted = sortByRecency(contextResult.representation.explicit);
+      const explicit = sorted
         .slice(0, 5)
         .map((e: any) => e.content || e)
         .join("; ");
@@ -243,7 +308,9 @@ async function fetchFreshContext(config: any, cwd: string, prompt: string): Prom
     }
 
     if (contextResult.representation?.deductive?.length) {
-      const deductive = contextResult.representation.deductive
+      // Sort by recency
+      const sorted = sortByRecency(contextResult.representation.deductive);
+      const deductive = sorted
         .slice(0, 3)
         .map((d: any) => d.conclusion)
         .join("; ");

@@ -41,20 +41,39 @@ function getSessionName(cwd: string): string {
   return basename(cwd).toLowerCase().replace(/[^a-z0-9-_]/g, "-");
 }
 
+/**
+ * Sort facts by recency (most recent first)
+ * Falls back to original order if no timestamps available
+ */
+function sortByRecency<T extends { created_at?: string; metadata?: { created_at?: string } }>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const aTime = a.created_at || a.metadata?.created_at || '';
+    const bTime = b.created_at || b.metadata?.created_at || '';
+    if (!aTime && !bTime) return 0;
+    if (!aTime) return 1;
+    if (!bTime) return -1;
+    return new Date(bTime).getTime() - new Date(aTime).getTime();
+  });
+}
+
 function formatRepresentation(rep: any): string {
   const parts: string[] = [];
 
   if (rep?.explicit?.length > 0) {
-    const explicit = rep.explicit
-      .slice(0, 15)
+    // Sort by recency - recent facts are more relevant
+    const sorted = sortByRecency(rep.explicit);
+    const explicit = sorted
+      .slice(0, 12)  // Reduced from 15 for less noise
       .map((e: any) => `- ${e.content || e}`)
       .join("\n");
     parts.push(`### Explicit Facts\n${explicit}`);
   }
 
   if (rep?.deductive?.length > 0) {
-    const deductive = rep.deductive
-      .slice(0, 10)
+    // Sort by recency
+    const sorted = sortByRecency(rep.deductive);
+    const deductive = sorted
+      .slice(0, 8)  // Reduced from 10 for less noise
       .map((d: any) => `- ${d.conclusion} (from: ${d.premises?.join(", ") || "prior observations"})`)
       .join("\n");
     parts.push(`### Deduced Insights\n${deductive}`);
@@ -328,15 +347,17 @@ export async function handleSessionStart(): Promise<void> {
     const fetchStart = Date.now();
     const [userContextResult, clawdContextResult, summariesResult, userChatResult, clawdChatResult] =
       await Promise.allSettled([
-        // 1. Get user's context (with metadata filtering for relevant observations)
+        // 1. Get user's context (SESSION-SCOPED for relevance)
         client.workspaces.peers.getContext(workspaceId, userPeerId!, {
-          max_observations: 30,
+          max_observations: 25,
           include_most_derived: true,
+          session_name: sessionName,  // Scope to current project/session
         }),
-        // 2. Get clawd's context (self-awareness!)
+        // 2. Get clawd's context (self-awareness, also session-scoped)
         client.workspaces.peers.getContext(workspaceId, clawdPeerId!, {
-          max_observations: 20,
+          max_observations: 15,
           include_most_derived: true,
+          session_name: sessionName,  // Scope to current project/session
         }),
         // 3. Get session summaries
         client.workspaces.sessions.summaries(workspaceId, sessionId),
@@ -364,25 +385,41 @@ export async function handleSessionStart(): Promise<void> {
     const successCount = asyncResults.filter(r => r.success).length;
     logAsync("context-fetch", `Completed: ${successCount}/5 succeeded in ${fetchDuration}ms`, asyncResults);
 
-    // Process user context
+    // ========== CONSOLIDATED CONTEXT OUTPUT ==========
+    // Reduced from 6+ overlapping sections to 2-3 focused sections
+    // (as recommended in FEEDBACK-FROM-CLAUDE.md)
+
+    // Section 1: User Profile + Key Facts (CONSOLIDATED)
+    // Combines: peer_card, explicit facts, deductive insights
+    // Skips redundant "AI Summary" dialectic if we have good facts
     if (userContextResult.status === "fulfilled" && userContextResult.value) {
       const context = userContextResult.value;
       setCachedUserContext(context); // Cache for user-prompt hook
       logCache("write", "userContext", `${context.representation?.explicit?.length || 0} facts`);
 
+      const userSection: string[] = [];
+
+      // Profile as a compact line (not a whole section)
       if (context.peer_card && context.peer_card.length > 0) {
-        contextParts.push(`## ${config.peerName}'s Profile\n${context.peer_card.join("\n")}`);
+        userSection.push(context.peer_card.join("\n"));
       }
 
+      // Add key facts (session-scoped, so should be relevant)
       if (context.representation) {
         const repText = formatRepresentation(context.representation);
         if (repText) {
-          contextParts.push(`## What I Know About ${config.peerName}\n${repText}`);
+          userSection.push(repText);
         }
+      }
+
+      if (userSection.length > 0) {
+        contextParts.push(`## ${config.peerName}'s Profile\n${userSection.join("\n\n")}`);
       }
     }
 
-    // Process clawd context (self-awareness)
+    // Section 2: Recent Work (CONSOLIDATED)
+    // Combines: clawd facts, session summary, self-reflection
+    // Prioritizes concrete work items over vague summaries
     if (clawdContextResult.status === "fulfilled" && clawdContextResult.value) {
       const context = clawdContextResult.value;
       setCachedClawdContext(context); // Cache
@@ -396,24 +433,29 @@ export async function handleSessionStart(): Promise<void> {
       }
     }
 
-    // Process session summaries
+    // Session summary - only include SHORT summary (skip Extended History to reduce noise)
     if (summariesResult.status === "fulfilled" && summariesResult.value) {
       const s = summariesResult.value as any;
       if (s.short_summary?.content) {
         contextParts.push(`## Recent Session Summary\n${s.short_summary.content}`);
       }
-      if (s.long_summary?.content) {
-        contextParts.push(`## Extended History\n${s.long_summary.content}`);
-      }
+      // Skip long_summary - it overlaps with facts and adds too many tokens
     }
 
-    // Process user dialectic response
-    if (userChatResult.status === "fulfilled" && userChatResult.value?.content) {
+    // AI dialectic summaries - only include if facts are sparse
+    // These cost $0.03 each but often overlap with facts we already have
+    const hasGoodUserFacts = (userContextResult.status === "fulfilled" &&
+      (userContextResult.value?.representation?.explicit?.length || 0) >= 5);
+    const hasGoodClawdFacts = (clawdContextResult.status === "fulfilled" &&
+      (clawdContextResult.value?.representation?.explicit?.length || 0) >= 3);
+
+    // Only show AI Summary if we don't have enough facts
+    if (!hasGoodUserFacts && userChatResult.status === "fulfilled" && userChatResult.value?.content) {
       contextParts.push(`## AI Summary of ${config.peerName}\n${userChatResult.value.content}`);
     }
 
-    // Process clawd dialectic response (self-reflection)
-    if (clawdChatResult.status === "fulfilled" && clawdChatResult.value?.content) {
+    // Only show AI Self-Reflection if we don't have enough clawd facts
+    if (!hasGoodClawdFacts && clawdChatResult.status === "fulfilled" && clawdChatResult.value?.content) {
       contextParts.push(`## AI Self-Reflection (What ${config.claudePeer} Has Been Doing)\n${clawdChatResult.value.content}`);
     }
 

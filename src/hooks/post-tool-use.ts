@@ -31,7 +31,7 @@ function getSessionName(cwd: string): string {
 }
 
 function shouldLogTool(toolName: string, toolInput: Record<string, any>): boolean {
-  const significantTools = new Set(["Write", "Edit", "Bash", "Task"]);
+  const significantTools = new Set(["Write", "Edit", "Bash", "Task", "NotebookEdit"]);
 
   if (!significantTools.has(toolName)) {
     return false;
@@ -49,25 +49,154 @@ function shouldLogTool(toolName: string, toolInput: Record<string, any>): boolea
   return true;
 }
 
+/**
+ * Extract meaningful purpose/description from file content
+ */
+function inferContentPurpose(content: string, filePath: string): string {
+  // Detect file type from extension
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+
+  // For code files, try to extract the main export/function/class
+  if (['ts', 'tsx', 'js', 'jsx'].includes(ext)) {
+    // Look for main export
+    const exportMatch = content.match(/export\s+(default\s+)?(function|class|const|interface|type)\s+(\w+)/);
+    if (exportMatch) {
+      return `defines ${exportMatch[2]} ${exportMatch[3]}`;
+    }
+    // Look for component
+    const componentMatch = content.match(/(?:function|const)\s+(\w+).*(?:return|=>)\s*[(<]/);
+    if (componentMatch) {
+      return `component ${componentMatch[1]}`;
+    }
+  }
+
+  // For Python
+  if (ext === 'py') {
+    const classMatch = content.match(/class\s+(\w+)/);
+    const defMatch = content.match(/def\s+(\w+)/);
+    if (classMatch) return `defines class ${classMatch[1]}`;
+    if (defMatch) return `defines function ${defMatch[1]}`;
+  }
+
+  // For markdown/docs
+  if (['md', 'mdx', 'txt'].includes(ext)) {
+    const headingMatch = content.match(/^#\s+(.+)$/m);
+    if (headingMatch) return `doc: ${headingMatch[1].slice(0, 50)}`;
+  }
+
+  // For config files
+  if (['json', 'yaml', 'yml', 'toml'].includes(ext)) {
+    return 'config file';
+  }
+
+  // Fallback: line count
+  const lineCount = content.split('\n').length;
+  return `${lineCount} lines`;
+}
+
+/**
+ * Summarize what changed in an edit (not just the raw strings)
+ */
+function summarizeEdit(oldStr: string, newStr: string, filePath: string): string {
+  const oldLines = oldStr.split('\n').length;
+  const newLines = newStr.split('\n').length;
+
+  // Detect type of change
+  if (oldStr.trim() === '') {
+    // Pure addition
+    const purpose = inferContentPurpose(newStr, filePath);
+    return `added ${newLines} lines (${purpose})`;
+  }
+
+  if (newStr.trim() === '') {
+    // Deletion
+    return `removed ${oldLines} lines`;
+  }
+
+  // Look for meaningful changes
+  const oldTokens = oldStr.match(/\w+/g) || [];
+  const newTokens = newStr.match(/\w+/g) || [];
+
+  // Find added/removed identifiers
+  const added = newTokens.filter(t => !oldTokens.includes(t) && t.length > 2);
+  const removed = oldTokens.filter(t => !newTokens.includes(t) && t.length > 2);
+
+  if (added.length > 0 && removed.length > 0) {
+    return `changed: ${removed.slice(0, 2).join(', ')} → ${added.slice(0, 2).join(', ')}`;
+  }
+  if (added.length > 0) {
+    return `added: ${added.slice(0, 3).join(', ')}`;
+  }
+  if (removed.length > 0) {
+    return `removed: ${removed.slice(0, 3).join(', ')}`;
+  }
+
+  // Fallback
+  const lineDiff = newLines - oldLines;
+  if (lineDiff > 0) return `expanded by ${lineDiff} lines`;
+  if (lineDiff < 0) return `reduced by ${-lineDiff} lines`;
+  return `modified ${oldLines} lines`;
+}
+
 function formatToolSummary(
   toolName: string,
   toolInput: Record<string, any>,
   toolResponse: Record<string, any>
 ): string {
   switch (toolName) {
-    case "Write":
-      return `Created/wrote file: ${toolInput.file_path || "unknown"}`;
-    case "Edit":
+    case "Write": {
       const filePath = toolInput.file_path || "unknown";
-      const oldStr = (toolInput.old_string || "").slice(0, 30);
-      const newStr = (toolInput.new_string || "").slice(0, 30);
-      return `Edited ${filePath}: '${oldStr}...' -> '${newStr}...'`;
-    case "Bash":
-      const command = (toolInput.command || "").slice(0, 80);
+      const content = toolInput.content || "";
+      const purpose = inferContentPurpose(content, filePath);
+      const fileName = filePath.split('/').pop() || filePath;
+      return `Wrote ${fileName} (${purpose})`;
+    }
+    case "Edit": {
+      const filePath = toolInput.file_path || "unknown";
+      const fileName = filePath.split('/').pop() || filePath;
+      const oldStr = toolInput.old_string || "";
+      const newStr = toolInput.new_string || "";
+      const changeSummary = summarizeEdit(oldStr, newStr, filePath);
+      return `Edited ${fileName}: ${changeSummary}`;
+    }
+    case "Bash": {
+      const command = (toolInput.command || "").slice(0, 100);
       const success = !toolResponse.error;
-      return `Ran: ${command} (${success ? "success" : "failed"})`;
-    case "Task":
-      return `Executed task: ${toolInput.description || "unknown"}`;
+      // Extract meaningful command info
+      const cmdParts = command.split(/[;&|]/)[0].trim();
+      // Categorize command type
+      if (['npm', 'pnpm', 'yarn', 'bun'].some(pm => command.includes(pm))) {
+        const action = command.match(/(install|build|test|run|dev|start)/)?.[0] || 'command';
+        return `Package ${action}: ${success ? 'success' : 'failed'}`;
+      }
+      if (command.includes('git commit')) {
+        const msg = command.match(/-m\s*["']([^"']+)["']/)?.[1] || '';
+        return `Git commit: ${msg.slice(0, 50)}${msg.length > 50 ? '...' : ''}`;
+      }
+      if (command.includes('git push')) {
+        return `Git push: ${success ? 'success' : 'failed'}`;
+      }
+      if (['curl', 'wget', 'fetch'].some(c => command.includes(c))) {
+        const url = command.match(/https?:\/\/[^\s"']+/)?.[0] || '';
+        return `HTTP request to ${url.split('/')[2] || 'API'}: ${success ? 'success' : 'failed'}`;
+      }
+      if (command.includes('docker') || command.includes('flyctl') || command.includes('fly ')) {
+        return `Deploy: ${cmdParts.slice(0, 60)} (${success ? 'success' : 'failed'})`;
+      }
+      return `Ran: ${cmdParts.slice(0, 60)} (${success ? "success" : "failed"})`;
+    }
+    case "Task": {
+      const desc = toolInput.description || "unknown";
+      const type = toolInput.subagent_type || "";
+      return `Agent task (${type}): ${desc}`;
+    }
+    case "NotebookEdit": {
+      const notebookPath = toolInput.notebook_path || "unknown";
+      const fileName = notebookPath.split('/').pop() || notebookPath;
+      const editMode = toolInput.edit_mode || "replace";
+      const cellType = toolInput.cell_type || "code";
+      return `Notebook ${editMode} ${cellType} cell in ${fileName}`;
+    }
     default:
       return `Used ${toolName}`;
   }
@@ -125,6 +254,7 @@ async function logToHonchoAsync(config: any, cwd: string, summary: string): Prom
   let workspaceId = getCachedWorkspaceId(config.workspace);
   let sessionId = getCachedSessionId(cwd);
   let clawdPeerId = getCachedPeerId(config.claudePeer);
+  const sessionName = getSessionName(cwd);
 
   // If we don't have cached IDs, do full setup and cache results
   if (!workspaceId || !sessionId || !clawdPeerId) {
@@ -135,7 +265,6 @@ async function logToHonchoAsync(config: any, cwd: string, summary: string): Prom
     workspaceId = workspace.id;
     setCachedWorkspaceId(config.workspace, workspaceId);
 
-    const sessionName = getSessionName(cwd);
     const session = await client.workspaces.sessions.getOrCreate(workspaceId, {
       id: sessionName,
       metadata: { cwd },
@@ -148,7 +277,7 @@ async function logToHonchoAsync(config: any, cwd: string, summary: string): Prom
     setCachedPeerId(config.claudePeer, clawdPeerId);
   }
 
-  // Log the tool use with instance_id for parallel session support
+  // Log the tool use with instance_id and session_affinity for project-scoped fact extraction
   logApiCall("sessions.messages.create", "POST", `tool: ${summary.slice(0, 50)}`);
   const instanceId = getClaudeInstanceId();
   await client.workspaces.sessions.messages.create(workspaceId, sessionId, {
@@ -156,7 +285,10 @@ async function logToHonchoAsync(config: any, cwd: string, summary: string): Prom
       {
         content: `[Tool] ${summary}`,
         peer_id: config.claudePeer,
-        metadata: instanceId ? { instance_id: instanceId } : undefined,
+        metadata: {
+          ...(instanceId ? { instance_id: instanceId } : {}),
+          session_affinity: sessionName,  // Tag for project-scoped fact extraction
+        },
       },
     ],
   });

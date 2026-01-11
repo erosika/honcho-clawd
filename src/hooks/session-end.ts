@@ -31,8 +31,12 @@ interface HookInput {
 interface TranscriptEntry {
   type: string;
   message?: {
-    content: string | Array<{ type: string; text?: string }>;
+    role?: string;
+    content: string | Array<{ type: string; text?: string; name?: string; input?: any }>;
   };
+  // Alternative format sometimes seen
+  role?: string;
+  content?: string | Array<{ type: string; text?: string }>;
 }
 
 function getSessionName(cwd: string): string {
@@ -43,8 +47,50 @@ function getSessionName(cwd: string): string {
   return basename(cwd).toLowerCase().replace(/[^a-z0-9-_]/g, "-");
 }
 
-function parseTranscript(transcriptPath: string): Array<{ role: string; content: string }> {
-  const messages: Array<{ role: string; content: string }> = [];
+/**
+ * Check if assistant content is meaningful prose vs just tool acknowledgment
+ * We want to capture explanations, summaries, recommendations - not "I'll run git status"
+ */
+function isMeaningfulAssistantContent(content: string): boolean {
+  // Skip very short responses
+  if (content.length < 50) return false;
+
+  // Skip responses that are mostly tool invocation announcements
+  const toolAnnouncements = [
+    /^(I'll|Let me|I'm going to|I will|Now I'll|First,? I'll)\s+(run|use|execute|check|read|look at|search|edit|write|create)/i,
+    /^Running\s+/i,
+    /^Checking\s+/i,
+    /^Looking at\s+/i,
+  ];
+  for (const pattern of toolAnnouncements) {
+    if (pattern.test(content.trim()) && content.length < 200) {
+      return false;
+    }
+  }
+
+  // Skip if it's just acknowledging tool results without explanation
+  if (/^(The command|The file|The output|This shows|Here's what)/i.test(content.trim()) && content.length < 150) {
+    return false;
+  }
+
+  // Keep: explanations, summaries, recommendations, analysis
+  const meaningfulPatterns = [
+    /\b(because|since|therefore|however|although|this means|in summary|to summarize|the issue is|the problem is|I recommend|you should|we should|this approach|the solution|key point|important|note that)\b/i,
+    /\b(implemented|fixed|resolved|completed|added|created|updated|changed|modified|refactored)\b/i,
+    /\b(error|bug|issue|problem|solution|fix|improvement|optimization)\b/i,
+  ];
+  for (const pattern of meaningfulPatterns) {
+    if (pattern.test(content)) {
+      return true;
+    }
+  }
+
+  // If it's long enough, probably meaningful
+  return content.length >= 200;
+}
+
+function parseTranscript(transcriptPath: string): Array<{ role: string; content: string; isMeaningful?: boolean }> {
+  const messages: Array<{ role: string; content: string; isMeaningful?: boolean }> = [];
 
   if (!transcriptPath || !existsSync(transcriptPath)) {
     return messages;
@@ -58,29 +104,56 @@ function parseTranscript(transcriptPath: string): Array<{ role: string; content:
       try {
         const entry: TranscriptEntry = JSON.parse(line);
 
-        if (entry.type === "user" && entry.message) {
+        // Handle different transcript formats
+        const entryType = entry.type || entry.role;
+        const messageContent = entry.message?.content || entry.content;
+
+        if (entryType === "user" && messageContent) {
           const userContent =
-            typeof entry.message.content === "string"
-              ? entry.message.content
-              : entry.message.content
+            typeof messageContent === "string"
+              ? messageContent
+              : messageContent
                   .filter((p) => p.type === "text")
                   .map((p) => p.text || "")
-                  .join("");
-          if (userContent) {
+                  .join("\n");
+          if (userContent && userContent.trim()) {
             messages.push({ role: "user", content: userContent });
           }
-        } else if (entry.type === "assistant" && entry.message) {
+        } else if (entryType === "assistant" && messageContent) {
           let assistantContent = "";
-          if (typeof entry.message.content === "string") {
-            assistantContent = entry.message.content;
-          } else if (Array.isArray(entry.message.content)) {
-            assistantContent = entry.message.content
-              .filter((p) => p.type === "text")
-              .map((p) => p.text || "")
-              .join("");
+
+          if (typeof messageContent === "string") {
+            assistantContent = messageContent;
+          } else if (Array.isArray(messageContent)) {
+            // Extract text blocks (skip tool_use blocks - those are captured by PostToolUse)
+            const textBlocks = messageContent
+              .filter((p) => p.type === "text" && p.text)
+              .map((p) => p.text!)
+              .join("\n\n");
+
+            // Also note what tools were used for context
+            const toolUses = messageContent
+              .filter((p) => p.type === "tool_use")
+              .map((p: any) => p.name)
+              .filter(Boolean);
+
+            assistantContent = textBlocks;
+
+            // If there were tool uses but minimal text, note what tools were used
+            if (toolUses.length > 0 && textBlocks.length < 100) {
+              assistantContent = textBlocks + (textBlocks ? "\n" : "") + `[Used tools: ${toolUses.join(", ")}]`;
+            }
           }
-          if (assistantContent) {
-            messages.push({ role: "assistant", content: assistantContent.slice(0, 2000) });
+
+          if (assistantContent && assistantContent.trim()) {
+            const isMeaningful = isMeaningfulAssistantContent(assistantContent);
+            // Truncate but keep more of meaningful content
+            const maxLen = isMeaningful ? 3000 : 1500;
+            messages.push({
+              role: "assistant",
+              content: assistantContent.slice(0, maxLen),
+              isMeaningful,
+            });
           }
         }
       } catch {
@@ -205,7 +278,10 @@ export async function handleSessionEnd(): Promise<void> {
         const userMessages = validMessages.map((msg) => ({
           content: msg.content,
           peer_id: config.peerName,
-          metadata: msg.instanceId ? { instance_id: msg.instanceId } : undefined,
+          metadata: {
+            ...(msg.instanceId ? { instance_id: msg.instanceId } : {}),
+            session_affinity: sessionName,  // Tag for project-scoped fact extraction
+          },
         }));
         await client.workspaces.sessions.messages.create(workspaceId, sessionId, {
           messages: userMessages,
@@ -217,21 +293,38 @@ export async function handleSessionEnd(): Promise<void> {
     // =====================================================
     // Step 2: Save assistant messages that weren't captured by post-tool-use
     // post-tool-use only logs tool activity, not Claude's prose responses
+    // This captures: explanations, summaries, recommendations, analysis
     // =====================================================
-    let assistantMessages: Array<{ role: string; content: string }> = [];
+    let assistantMessages: Array<{ role: string; content: string; isMeaningful?: boolean }> = [];
     if (config.saveMessages !== false && transcriptMessages.length > 0) {
-      // Extract assistant prose (non-tool responses) for clawd peer
-      assistantMessages = transcriptMessages
-        .filter((msg) => msg.role === "assistant")
-        .slice(-30);
+      // Extract assistant prose - prioritize meaningful content
+      const allAssistant = transcriptMessages.filter((msg) => msg.role === "assistant");
+
+      // Prioritize meaningful messages (explanations, summaries, etc.)
+      const meaningful = allAssistant.filter((msg) => msg.isMeaningful);
+      const other = allAssistant.filter((msg) => !msg.isMeaningful);
+
+      // Take all meaningful + recent others, up to 40 total
+      assistantMessages = [
+        ...meaningful.slice(-25),  // Keep more meaningful content
+        ...other.slice(-15),       // Keep some context
+      ].slice(-40);
 
       // Upload assistant messages for clawd peer knowledge extraction
+      // This is the KEY fix: capturing actual reasoning, not just tool calls
       if (assistantMessages.length > 0) {
-        logApiCall("sessions.messages.create", "POST", `${assistantMessages.length} assistant messages`);
+        const meaningfulCount = assistantMessages.filter(m => m.isMeaningful).length;
+        logApiCall("sessions.messages.create", "POST", `${assistantMessages.length} assistant msgs (${meaningfulCount} meaningful)`);
+
         const messagesToSend = assistantMessages.map((msg) => ({
           content: msg.content,
           peer_id: config.claudePeer,
-          metadata: instanceId ? { instance_id: instanceId } : undefined,
+          metadata: {
+            ...(instanceId ? { instance_id: instanceId } : {}),
+            type: msg.isMeaningful ? 'assistant_prose' : 'assistant_brief',
+            meaningful: msg.isMeaningful || false,
+            session_affinity: sessionName,  // Tag for project-scoped fact extraction
+          },
         }));
 
         await client.workspaces.sessions.messages.create(workspaceId, sessionId, {
@@ -272,13 +365,17 @@ export async function handleSessionEnd(): Promise<void> {
         {
           content: `[Session ended] Reason: ${reason}, Messages: ${transcriptMessages.length}, Time: ${new Date().toISOString()}`,
           peer_id: config.claudePeer,
-          metadata: instanceId ? { instance_id: instanceId } : undefined,
+          metadata: {
+            ...(instanceId ? { instance_id: instanceId } : {}),
+            session_affinity: sessionName,  // Tag for project-scoped fact extraction
+          },
         },
       ],
     });
 
-    logHook("session-end", `Session saved: ${assistantMessages.length} assistant msgs, ${queuedMessages.length} queued msgs`);
-    console.log(`[honcho-clawd] Session saved: ${assistantMessages.length} assistant messages, ${queuedMessages.length} queued messages processed`);
+    const meaningfulCount = assistantMessages.filter(m => m.isMeaningful).length;
+    logHook("session-end", `Session saved: ${assistantMessages.length} assistant msgs (${meaningfulCount} meaningful), ${queuedMessages.length} queued msgs`);
+    console.log(`[honcho-clawd] Session saved: ${assistantMessages.length} assistant messages (${meaningfulCount} with meaningful prose), ${queuedMessages.length} queued messages`);
     process.exit(0);
   } catch (error) {
     logHook("session-end", `Error: ${error}`, { error: String(error) });
